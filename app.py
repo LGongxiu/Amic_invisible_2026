@@ -105,6 +105,8 @@ def init_db():
         q("ALTER TABLE pistas ADD COLUMN tipo TEXT DEFAULT 'pista'")
     except sqlite3.OperationalError:
         pass
+    q("""CREATE TABLE IF NOT EXISTS comentarios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, pista_id INTEGER, personaje TEXT, texto TEXT)""")
     q("CREATE TABLE IF NOT EXISTS avatares (personaje TEXT PRIMARY KEY, ruta TEXT)")
     q("CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)")
 
@@ -344,9 +346,24 @@ elif pagina == "🕵️‍♂️ Muro de pistas":
             mostrar_enlace(p["url"])
         if p["imagen"] and os.path.exists(p["imagen"]):
             show_img(p["imagen"])
+        coms = q("SELECT * FROM comentarios WHERE pista_id=? ORDER BY id", (p["id"],), fetch=True)
+        for c in coms:
+            st.markdown(f"> **{c['personaje']}:** {c['texto']}")
+            if st.session_state.get("admin"):
+                if st.button("🗑️ Quitar comentario", key=f"delc_{c['id']}"):
+                    q("DELETE FROM comentarios WHERE id=?", (c["id"],))
+                    st.rerun()
+        if yo is not None:
+            with st.form(f"com_{p['id']}", clear_on_submit=True):
+                t = st.text_input("💬 Comenta como tu personaje", key=f"t_{p['id']}", max_chars=300)
+                if st.form_submit_button("Comentar") and t.strip():
+                    q("INSERT INTO comentarios (pista_id, personaje, texto) VALUES (?,?,?)",
+                      (p["id"], yo["personaje"], t.strip()))
+                    st.rerun()
         if st.session_state.get("admin"):
             if st.button("🗑️ Eliminar esta publicación", key=f"del_{p['id']}"):
                 q("DELETE FROM pistas WHERE id=?", (p["id"],))
+                q("DELETE FROM comentarios WHERE pista_id=?", (p["id"],))
                 if p["imagen"] and os.path.exists(p["imagen"]):
                     os.remove(p["imagen"])
                 st.rerun()
@@ -475,7 +492,7 @@ elif pagina == "⚙️ Organizador":
             elif len(pers) < len(todos):
                 st.error(f"Hay {len(todos)} jugadores y solo {len(pers)} personajes.")
             else:
-                q("DELETE FROM jugadores"); q("DELETE FROM pistas"); q("DELETE FROM votos")
+                q("DELETE FROM jugadores"); q("DELETE FROM pistas"); q("DELETE FROM votos"); q("DELETE FROM comentarios")
                 q("INSERT OR REPLACE INTO ajustes VALUES ('personajes', ?)", ("\n".join(pers),))
                 random.shuffle(pers)
                 pines = {}
