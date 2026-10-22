@@ -17,6 +17,12 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Mountains+of+Christmas:wght@400;700&display=swap');
 .stApp { background-color: #0B2515; color: #F4EBE1; }
 [data-testid="stSidebar"] { background-color: #06190E; }
+/* Desplegable del organizador: mismo color que el fondo del menú */
+[data-testid="stExpander"], [data-testid="stExpander"] details, [data-testid="stExpander"] summary,
+[data-testid="stExpander"] details > div { background-color: #06190E !important; color: #F4EBE1 !important; }
+[data-testid="stExpander"] details { border: 1px solid #721C24 !important; border-radius: 8px; }
+[data-testid="stExpander"] summary:hover { background-color: #0B2515 !important; }
+[data-testid="stExpander"] summary * { color: #F4EBE1 !important; }
 h1, h2, h3, p, span, label { color: #F4EBE1 !important; }
 p, label { font-family: 'Georgia', serif; }
 h1, h2, h3 { font-family: 'Mountains of Christmas', 'Georgia', cursive !important; font-weight: 700 !important; letter-spacing: 0.5px; }
