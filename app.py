@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import sqlite3
 import random
@@ -47,20 +46,6 @@ div[data-baseweb="popover"] ul, div[data-baseweb="popover"] li, ul[role="listbox
 div[data-baseweb="popover"] *, ul[role="listbox"] * { color: #000000 !important; }
 /* Zona de subir fotos y bloques de código */
 [data-testid="stFileUploaderDropzone"] *, pre, pre *, code, code * { color: #000000 !important; }
-/* Línea horizontal adaptada al color de fondo y iconos rojos */
-hr {
-    border: none;
-    height: 2px;
-    background-color: #0B2515 !important;
-    margin: 20px 0;
-}
-.stMarkdown hr {
-    border-color: #0B2515 !important;
-}
-span[data-testid="stIcon"], svg {
-    fill: #FF0000 !important;
-    color: #FF0000 !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -401,9 +386,8 @@ elif pagina == "🗳️ Votaciones":
         st.stop()
     ronda = st.selectbox("Votación", abiertas, format_func=lambda i: f"Votación {i + 1} ({RONDAS[i][1].strftime('%d/%m')})", index=len(abiertas) - 1)
 
-    # Excluimos al propio usuario de la lista de personas a votar
     otros = [j for j in jugadores() if j["nombre"] != usuario]
-    todos_personajes = sorted(j["personaje"] for j in jugadores())
+    opciones = sorted(j["personaje"] for j in otros)
     previos = {(v["tipo"], v["objetivo"]): v["personaje"] for v in
                q("SELECT * FROM votos WHERE ronda=? AND votante=?", (ronda, usuario), fetch=True)}
     st.caption("Puedes cambiar tu voto y reenviarlo mientras la votación esté abierta. "
@@ -413,42 +397,17 @@ elif pagina == "🗳️ Votaciones":
         amigo = None
         if yo["rol"] == "Participante":
             st.markdown("### 🧠 Tu apuesta principal (doble punto)")
-            ops_amigo = ["—"] + [j["personaje"] for j in jugadores() if j["nombre"] != usuario and j["rol"] == "Participante"]
-            pr_amigo = previos.get(("A", ""), "—")
+            ops = ["—"] + [j["personaje"] for j in otros if j["rol"] == "Participante"]
+            pr = previos.get(("A", ""), "—")
             amigo = st.selectbox("¿Qué personaje crees que es TU amigo invisible (el que te hace el regalo)?",
-                                 ops_amigo, index=ops_amigo.index(pr_amigo) if pr_amigo in ops_amigo else 0)
-        
+                                 ops, index=ops.index(pr) if pr in ops else 0)
         st.markdown("### 🕵️‍♂️ Quiniela de compañeros")
         elegidos = {}
-
-        # Obtenemos los valores actuales seleccionados en este formulario o en la base de datos
-        # Para calcular dinámicamente qué personajes faltan por asignar en los desplegables
-        valores_asignados = []
         for j in otros:
+            ops = ["—"] + opciones
             pr = previos.get(("P", j["nombre"]), "—")
-            valores_asignados.append(pr)
-
-        for j in otros:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown(f"<div style='padding-top: 10px; font-weight: bold;'>{j['nombre']}</div>", unsafe_allow_html=True)
-            with col2:
-                pr = previos.get(("P", j["nombre"]), "—")
-                # Personajes disponibles: el actual de este selectbox + los que no estén seleccionados en otros campos
-                otros_asignados = [elegidos[otr]["value"] for otr in elegidos if otr != j["nombre"]]
-                
-                # Construir lista de opciones disponibles
-                ops_disponibles = ["—"] + [p for p in todos_personajes if p == pr or p not in otros_asignados]
-                
-                # Asegurar que el valor previo esté en las opciones si existe
-                if pr != "—" and pr not in ops_disponibles:
-                    ops_disponibles.append(pr)
-                
-                idx = ops_disponibles.index(pr) if pr in ops_disponibles else 0
-                elegido = st.selectbox(f"¿Qué personaje es {j['nombre']}?", ops_disponibles,
-                                       index=idx, key=f"q_{ronda}_{j['nombre']}", label_visibility="collapsed")
-                elegidos[j["nombre"]] = elegido
-
+            elegidos[j["nombre"]] = st.selectbox(f"¿Qué personaje es {j['nombre']}?", ops,
+                                                 index=ops.index(pr) if pr in ops else 0, key=f"q_{ronda}_{j['nombre']}")
         if st.form_submit_button("Enviar voto"):
             usados = [v for v in elegidos.values() if v != "—"]
             if len(usados) != len(set(usados)):
@@ -606,5 +565,3 @@ elif pagina == "⚙️ Organizador":
         for k, (n, r) in enumerate(avs.items()):
             with cols[k % 4]:
                 st.image(r, width=70, caption=n)
-
-```
