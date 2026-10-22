@@ -27,9 +27,18 @@ div.stButton > button:first-child, div[data-testid="stFormSubmitButton"] > butto
 div.stButton > button:first-child:hover, div[data-testid="stFormSubmitButton"] > button:hover {
     background-color: #A93226; color: #FFFFFF; border-color: #C0392B; }
 .stAlert { background-color: #143F24 !important; border-left: 5px solid #721C24 !important; border-radius: 8px; }
-div[data-baseweb="input"], div[data-baseweb="select"], div[data-baseweb="textarea"] {
-    background-color: #143F24 !important; border: 1px solid #721C24 !important; }
-input, select, textarea { color: #F4EBE1 !important; }
+/* Casillas blancas con letra negra */
+div[data-baseweb="input"], div[data-baseweb="select"], div[data-baseweb="textarea"], div[data-baseweb="base-input"] {
+    background-color: #FFFFFF !important; border: 1px solid #721C24 !important; }
+input, select, textarea,
+div[data-baseweb="input"] *, div[data-baseweb="select"] *, div[data-baseweb="textarea"] * {
+    color: #000000 !important; -webkit-text-fill-color: #000000 !important; }
+::placeholder { color: #6B6B6B !important; -webkit-text-fill-color: #6B6B6B !important; opacity: 1; }
+/* Menús desplegables */
+div[data-baseweb="popover"] ul, div[data-baseweb="popover"] li, ul[role="listbox"] { background-color: #FFFFFF !important; }
+div[data-baseweb="popover"] *, ul[role="listbox"] * { color: #000000 !important; }
+/* Zona de subir fotos y bloques de código */
+[data-testid="stFileUploaderDropzone"] *, pre, pre *, code, code * { color: #000000 !important; }
 </style>
 """, unsafe_allow_html=True)
 
