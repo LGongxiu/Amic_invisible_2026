@@ -46,7 +46,9 @@ div[data-baseweb="popover"] *, ul[role="listbox"] * { color: #000000 !important;
 # ---------------------------------------------------------------- CONFIGURACIÓN
 DB_FILE = "juego_navidad.db"
 IMG_DIR = "imagenes"
+AVATAR_DIR = "avatares"
 os.makedirs(IMG_DIR, exist_ok=True)
+os.makedirs(AVATAR_DIR, exist_ok=True)
 
 # (inicio de pistas, día de votación) de cada semana
 RONDAS = [
@@ -97,6 +99,7 @@ def init_db():
         q("ALTER TABLE pistas ADD COLUMN tipo TEXT DEFAULT 'pista'")
     except sqlite3.OperationalError:
         pass
+    q("CREATE TABLE IF NOT EXISTS avatares (personaje TEXT PRIMARY KEY, ruta TEXT)")
     q("CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)")
 
 
@@ -144,6 +147,22 @@ def mostrar_enlace(url):
     st.markdown(f'<img src="{html.escape(u, quote=True)}" style="width:100%;border-radius:8px" '
                 f'referrerpolicy="no-referrer" alt="pista">', unsafe_allow_html=True)
     st.caption(f"[🔗 ¿No se ve? Abrir enlace]({u})")
+
+
+def todos_los_avatares():
+    return {r["personaje"]: r["ruta"] for r in q("SELECT * FROM avatares", fetch=True) if os.path.exists(r["ruta"])}
+
+
+def cabecera(avatar, texto):
+    """Foto de perfil del personaje (o una máscara si no tiene) junto al texto."""
+    c1, c2 = st.columns([1, 5])
+    with c1:
+        if avatar:
+            st.image(avatar, width=64)
+        else:
+            st.markdown("<div style='font-size:44px;line-height:1.2'>🎭</div>", unsafe_allow_html=True)
+    with c2:
+        st.markdown(texto)
 
 
 def derangement(items, prohibidos=frozenset()):
@@ -256,6 +275,9 @@ def requiere_login(permitir_admin=False):
 if pagina == "🎁 Mi perfil":
     yo = requiere_login()
     st.header("🎄 Tu perfil secreto")
+    av = todos_los_avatares().get(yo["personaje"])
+    if av:
+        st.image(av, width=140)
     st.info(f"🎭 Tu personaje es: **{yo['personaje']}**")
     if yo["rol"] == "Participante":
         st.info(f"🎁 Le haces el regalo a: **{yo['regala_a']}**")
@@ -303,11 +325,13 @@ elif pagina == "🕵️‍♂️ Muro de pistas":
                     st.error("La publicación no puede estar vacía.")
     st.markdown("---")
     st.markdown("### 📜 Historial del muro")
+    avatares = todos_los_avatares()
     for p in q("SELECT * FROM pistas ORDER BY id DESC", fetch=True):
         if (p["tipo"] or "pista") == "mensaje":
-            st.markdown(f"💬 **{p['personaje']}** dice:")
+            sub = f"💬 **{p['personaje']}** dice:"
         else:
-            st.markdown(f"🎅 **{p['personaje']}** (Pista Semana {p['semana']})")
+            sub = f"🎅 **{p['personaje']}** (Pista Semana {p['semana']})"
+        cabecera(avatares.get(p["personaje"]), sub)
         if p["texto"]:
             st.info(p["texto"])
         if p["url"]:
@@ -476,3 +500,38 @@ elif pagina == "⚙️ Organizador":
     if st.checkbox("Mostrar asignaciones (¡spoilers!)"):
         st.dataframe([{"Jugador": j["nombre"], "Rol": j["rol"], "Personaje": j["personaje"], "Regala a": j["regala_a"]}
                       for j in jugadores()], hide_index=True, use_container_width=True)
+
+    st.subheader("5. Fotos de perfil de los personajes")
+    lista = [x.strip() for x in pool_txt.splitlines() if x.strip()]
+    avs = todos_los_avatares()
+    with st.form("avatar", clear_on_submit=True):
+        pers_sel = st.selectbox("Personaje", lista)
+        foto_av = st.file_uploader("Foto de perfil (png, jpg, gif o webp)", type=["png", "jpg", "jpeg", "gif", "webp"])
+        c_a, c_b = st.columns(2)
+        guardar = c_a.form_submit_button("Guardar foto")
+        quitar = c_b.form_submit_button("Quitar foto")
+        if guardar:
+            if foto_av is None:
+                st.error("Elige primero una imagen.")
+            else:
+                ext = foto_av.name.rsplit(".", 1)[-1].lower()
+                ruta = os.path.join(AVATAR_DIR, f"{uuid.uuid4().hex}.{ext}")
+                with open(ruta, "wb") as f:
+                    f.write(foto_av.getvalue())
+                vieja = avs.get(pers_sel)
+                q("INSERT OR REPLACE INTO avatares VALUES (?,?)", (pers_sel, ruta))
+                if vieja and os.path.exists(vieja):
+                    os.remove(vieja)
+                st.success(f"Foto de «{pers_sel}» guardada.")
+                st.rerun()
+        if quitar:
+            vieja = avs.get(pers_sel)
+            q("DELETE FROM avatares WHERE personaje=?", (pers_sel,))
+            if vieja and os.path.exists(vieja):
+                os.remove(vieja)
+            st.rerun()
+    if avs:
+        cols = st.columns(4)
+        for k, (n, r) in enumerate(avs.items()):
+            with cols[k % 4]:
+                st.image(r, width=70, caption=n)
