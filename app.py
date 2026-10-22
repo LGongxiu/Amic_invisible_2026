@@ -5,6 +5,7 @@ import hashlib
 import secrets
 import os
 import uuid
+import html
 from contextlib import closing
 from datetime import date, timedelta
 
@@ -92,6 +93,10 @@ def init_db():
     q("""CREATE TABLE IF NOT EXISTS votos (
         ronda INTEGER, votante TEXT, tipo TEXT, objetivo TEXT, personaje TEXT,
         PRIMARY KEY (ronda, votante, tipo, objetivo))""")
+    try:  # bases de datos antiguas: añade el tipo de publicación (pista o mensaje libre)
+        q("ALTER TABLE pistas ADD COLUMN tipo TEXT DEFAULT 'pista'")
+    except sqlite3.OperationalError:
+        pass
     q("CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)")
 
 
@@ -121,6 +126,24 @@ def show_img(src):
         st.image(src, width="stretch")
     except Exception:
         st.image(src, use_container_width=True)
+
+
+def normalizar_url(url):
+    """Convierte enlaces de página de Giphy en el enlace directo del GIF."""
+    url = url.strip()
+    base = url.split("?")[0].rstrip("/")
+    if any(x in base for x in ("giphy.com/gifs/", "giphy.com/stickers/", "giphy.com/embed/")):
+        gid = base.split("/")[-1].split("-")[-1]
+        return f"https://media.giphy.com/media/{gid}/giphy.gif"
+    return url
+
+
+def mostrar_enlace(url):
+    """Pinta la imagen con una etiqueta <img> (más tolerante que st.image) y deja un enlace de respaldo."""
+    u = normalizar_url(url)
+    st.markdown(f'<img src="{html.escape(u, quote=True)}" style="width:100%;border-radius:8px" '
+                f'referrerpolicy="no-referrer" alt="pista">', unsafe_allow_html=True)
+    st.caption(f"[🔗 ¿No se ve? Abrir enlace]({u})")
 
 
 def derangement(items, prohibidos=frozenset()):
@@ -220,8 +243,10 @@ usuario = st.session_state.usuario
 st.title("🎅 El Banquete de los Impostores Navideños")
 
 
-def requiere_login():
+def requiere_login(permitir_admin=False):
     if usuario is None:
+        if permitir_admin and st.session_state.get("admin"):
+            return None
         st.info("Entra con tu nombre y tu PIN en el menú de la izquierda.")
         st.stop()
     return q("SELECT * FROM jugadores WHERE nombre=?", (usuario,), fetch=True)[0]
@@ -241,18 +266,22 @@ if pagina == "🎁 Mi perfil":
 
 # ---------------------------------------------------------------- MURO DE PISTAS
 elif pagina == "🕵️‍♂️ Muro de pistas":
-    yo = requiere_login()
+    yo = requiere_login(permitir_admin=True)
     st.header("🕵️‍♂️ El Muro de los Impostores")
     semanas = list(range(1, len(RONDAS) + 1)) if modo_prueba() else semanas_empezadas()
-    if not semanas:
-        st.warning("El juego empieza el sábado 28 de noviembre.")
+    if yo is None:
+        st.info("Modo organizador: puedes moderar el muro. Para publicar, entra con tu nombre y tu PIN.")
     else:
-        st.markdown(f"### 📤 Publicar pista como **{yo['personaje']}**")
+        st.markdown(f"### 📤 Escribir en el muro como **{yo['personaje']}**")
+        tipo_msg = st.radio("¿Qué quieres publicar?", ["💬 Mensaje libre", "🎭 Pista de la semana"], horizontal=True)
+        es_pista = tipo_msg.startswith("🎭")
+        if es_pista and not semanas:
+            st.caption("Las pistas empiezan el sábado 28 de noviembre. Mientras tanto puedes escribir mensajes libres.")
         with st.form("pista", clear_on_submit=True):
-            semana = st.selectbox("Semana de la pista", semanas, index=len(semanas) - 1)
-            texto = st.text_area("1. Escribe tu pista (habla como tu personaje):")
+            semana = st.selectbox("Semana de la pista", semanas, index=len(semanas) - 1) if (es_pista and semanas) else 0
+            texto = st.text_area("1. Escribe lo que quieras (habla como tu personaje):")
             tipo = st.radio("2. Archivo visual (opcional)", ["Ninguno", "Enlace (GIF o imagen)", "Subir foto"])
-            url = st.text_input("Enlace del GIF o imagen (solo si eliges enlace):")
+            url = st.text_input("Enlace del GIF o imagen (solo si eliges enlace). Mejor un enlace de Giphy o uno directo que acabe en .gif, .jpg o .png:")
             foto = st.file_uploader("Foto (solo si eliges subir foto):", type=["png", "jpg", "jpeg", "gif"])
             if st.form_submit_button("Publicar"):
                 ruta = ""
@@ -262,22 +291,35 @@ elif pagina == "🕵️‍♂️ Muro de pistas":
                     with open(ruta, "wb") as f:
                         f.write(foto.getvalue())
                 url_ok = url.strip() if tipo == "Enlace (GIF o imagen)" else ""
-                if texto.strip() or url_ok or ruta:
-                    q("INSERT INTO pistas (semana, personaje, texto, url, imagen) VALUES (?,?,?,?,?)",
-                      (semana, yo["personaje"], texto.strip(), url_ok, ruta))
-                    st.success("¡Pista publicada!")
+                if es_pista and not semanas:
+                    st.error("Las pistas aún no han empezado. Elige «Mensaje libre».")
+                elif url_ok and not url_ok.lower().startswith(("http://", "https://")):
+                    st.error("El enlace debe empezar por http:// o https://")
+                elif texto.strip() or url_ok or ruta:
+                    q("INSERT INTO pistas (semana, personaje, texto, url, imagen, tipo) VALUES (?,?,?,?,?,?)",
+                      (semana, yo["personaje"], texto.strip(), url_ok, ruta, "pista" if es_pista else "mensaje"))
+                    st.success("¡Publicado en el muro!")
                 else:
-                    st.error("La pista no puede estar vacía.")
+                    st.error("La publicación no puede estar vacía.")
     st.markdown("---")
     st.markdown("### 📜 Historial del muro")
     for p in q("SELECT * FROM pistas ORDER BY id DESC", fetch=True):
-        st.markdown(f"🎅 **{p['personaje']}** (Semana {p['semana']})")
+        if (p["tipo"] or "pista") == "mensaje":
+            st.markdown(f"💬 **{p['personaje']}** dice:")
+        else:
+            st.markdown(f"🎅 **{p['personaje']}** (Pista Semana {p['semana']})")
         if p["texto"]:
             st.info(p["texto"])
         if p["url"]:
-            show_img(p["url"])
+            mostrar_enlace(p["url"])
         if p["imagen"] and os.path.exists(p["imagen"]):
             show_img(p["imagen"])
+        if st.session_state.get("admin"):
+            if st.button("🗑️ Eliminar esta publicación", key=f"del_{p['id']}"):
+                q("DELETE FROM pistas WHERE id=?", (p["id"],))
+                if p["imagen"] and os.path.exists(p["imagen"]):
+                    os.remove(p["imagen"])
+                st.rerun()
 
 # ---------------------------------------------------------------- VOTACIONES
 elif pagina == "🗳️ Votaciones":
