@@ -13,9 +13,14 @@ st.set_page_config(page_title="Amigo Invisible: Liga de Impostores 2026", page_i
 # ---------------------------------------------------------------- ESTILO
 st.markdown("""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Mountains+of+Christmas:wght@400;700&display=swap');
 .stApp { background-color: #0B2515; color: #F4EBE1; }
 [data-testid="stSidebar"] { background-color: #06190E; }
-h1, h2, h3, p, span, label { color: #F4EBE1 !important; font-family: 'Georgia', serif; }
+h1, h2, h3, p, span, label { color: #F4EBE1 !important; }
+p, label { font-family: 'Georgia', serif; }
+h1, h2, h3 { font-family: 'Mountains of Christmas', 'Georgia', cursive !important; font-weight: 700 !important; letter-spacing: 0.5px; }
+h1 { font-size: 3rem !important; color: #E8C46A !important; text-shadow: 2px 2px 0 #721C24; }
+h2, h3 { color: #F4EBE1 !important; }
 div.stButton > button:first-child, div[data-testid="stFormSubmitButton"] > button {
     background-color: #721C24; color: #F4EBE1; border: 2px solid #A93226;
     border-radius: 8px; font-weight: bold; transition: all 0.3s ease; }
@@ -109,13 +114,15 @@ def show_img(src):
         st.image(src, use_container_width=True)
 
 
-def derangement(items):
-    """Sorteo sin que nadie se toque a sí mismo."""
-    while True:
+def derangement(items, prohibidos=frozenset()):
+    """Sorteo sin que nadie se toque a sí mismo ni caiga en una pareja prohibida.
+    Devuelve None si no hay forma de cumplir todas las exclusiones."""
+    for _ in range(20000):
         p = items[:]
         random.shuffle(p)
-        if all(a != b for a, b in zip(items, p)):
+        if all(a != b and (a, b) not in prohibidos for a, b in zip(items, p)):
             return dict(zip(items, p))
+    return None
 
 
 def modo_prueba():
@@ -349,6 +356,10 @@ elif pagina == "⚙️ Organizador":
     with st.form("sorteo"):
         part_txt = st.text_area("Participantes del amigo invisible (uno por línea)")
         det_txt = st.text_area("Detectives externos: solo juegan a los personajes (uno por línea)")
+        excl_txt = st.text_area(
+            "Exclusiones del amigo invisible (opcional, una por línea).\n"
+            "«Ana > Luis» = Ana no le hace el regalo a Luis. «Ana = Luis» = no se tocan entre ellos (parejas).",
+            placeholder="Ana > Luis\nMaría = Pedro")
         pers_txt = st.text_area("Personajes (uno por línea, al menos tantos como jugadores)", value=pool_txt, height=200)
         ok = st.checkbox("Entiendo que esto borra jugadores, pistas y votos anteriores")
         if st.form_submit_button("🎲 Hacer sorteo"):
@@ -356,17 +367,36 @@ elif pagina == "⚙️ Organizador":
             det = [x.strip() for x in det_txt.splitlines() if x.strip() and x.strip() not in part]
             pers = list(dict.fromkeys(x.strip() for x in pers_txt.splitlines() if x.strip()))
             todos = part + det
+            prohibidos, err_excl = set(), []
+            for linea in excl_txt.splitlines():
+                if not linea.strip():
+                    continue
+                sep = "=" if "=" in linea else ">" if ">" in linea else None
+                if not sep:
+                    err_excl.append(f"Formato no válido: «{linea.strip()}»")
+                    continue
+                a, b = (x.strip() for x in linea.split(sep, 1))
+                if a not in part or b not in part:
+                    err_excl.append(f"«{linea.strip()}»: ambos nombres deben estar en la lista de participantes.")
+                    continue
+                prohibidos.add((a, b))
+                if sep == "=":
+                    prohibidos.add((b, a))
+            regalos = derangement(part, frozenset(prohibidos)) if len(part) >= 3 and not err_excl else None
             if not ok:
                 st.error("Marca la casilla de confirmación.")
             elif len(part) < 3:
                 st.error("Hacen falta al menos 3 participantes.")
+            elif err_excl:
+                st.error("\n\n".join(err_excl))
+            elif regalos is None:
+                st.error("Con esas exclusiones no es posible hacer el sorteo. Quita alguna e inténtalo de nuevo.")
             elif len(pers) < len(todos):
                 st.error(f"Hay {len(todos)} jugadores y solo {len(pers)} personajes.")
             else:
                 q("DELETE FROM jugadores"); q("DELETE FROM pistas"); q("DELETE FROM votos")
                 q("INSERT OR REPLACE INTO ajustes VALUES ('personajes', ?)", ("\n".join(pers),))
                 random.shuffle(pers)
-                regalos = derangement(part)
                 pines = {}
                 for n in todos:
                     pin = nuevo_pin()
