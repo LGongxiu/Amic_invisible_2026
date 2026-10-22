@@ -348,7 +348,14 @@ elif pagina == "🕵️‍♂️ Muro de pistas":
             show_img(p["imagen"])
         coms = q("SELECT * FROM comentarios WHERE pista_id=? ORDER BY id", (p["id"],), fetch=True)
         for c in coms:
-            st.markdown(f"> **{c['personaje']}:** {c['texto']}")
+            ca, cb = st.columns([1, 9])
+            with ca:
+                if avatares.get(c["personaje"]):
+                    st.image(avatares[c["personaje"]], width=40)
+                else:
+                    st.markdown("<div style='font-size:28px'>🎭</div>", unsafe_allow_html=True)
+            with cb:
+                st.markdown(f"**{c['personaje']}:** {c['texto']}")
             if st.session_state.get("admin"):
                 if st.button("🗑️ Quitar comentario", key=f"delc_{c['id']}"):
                     q("DELETE FROM comentarios WHERE id=?", (c["id"],))
