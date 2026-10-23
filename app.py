@@ -17,11 +17,6 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Mountains+of+Christmas:wght@400;700&display=swap');
 .stApp { background-color: #0B2515; color: #F4EBE1; }
 [data-testid="stSidebar"] { background-color: #06190E; }
-/* Barra superior de Streamlit (y su línea de colores) del mismo color que el fondo */
-header[data-testid="stHeader"], [data-testid="stHeader"] { background-color: #0B2515 !important; }
-[data-testid="stDecoration"] { background: #0B2515 !important; background-image: none !important; }
-[data-testid="stToolbar"] { background-color: #0B2515 !important; }
-[data-testid="stHeader"] button, [data-testid="stHeader"] svg, [data-testid="stToolbar"] svg { color: #F4EBE1 !important; fill: #F4EBE1 !important; }
 /* Desplegable del organizador: mismo color que el fondo del menú */
 [data-testid="stExpander"], [data-testid="stExpander"] details, [data-testid="stExpander"] summary,
 [data-testid="stExpander"] details > div { background-color: #06190E !important; color: #F4EBE1 !important; }
