@@ -87,6 +87,8 @@ except Exception:
 # ---------------------------------------------------------------- BASE DE DATOS (SQLite compartida)
 def q(sql, args=(), fetch=False):
     """Ejecuta una consulta. SQLite gestiona la concurrencia, así nadie pisa los datos de otro."""
+    # Convierte los parámetros a tipos simples (texto, número, None) para evitar errores de enlace en SQLite
+    args = tuple(a if a is None or isinstance(a, (int, float, bytes)) else str(a) for a in args)
     with closing(sqlite3.connect(DB_FILE, timeout=15)) as con:
         con.row_factory = sqlite3.Row
         cur = con.execute(sql, args)
@@ -243,7 +245,12 @@ if st.session_state.usuario is None:
         n = st.selectbox("Tu nombre", ["—"] + nombres)
         p = st.text_input("Tu PIN", type="password", max_chars=4)
         if st.form_submit_button("Entrar"):
-            fila = q("SELECT * FROM jugadores WHERE nombre=?", (n,), fetch=True)
+            fila = []
+            if n and n != "—":
+                try:
+                    fila = q("SELECT * FROM jugadores WHERE nombre=?", (n,), fetch=True)
+                except Exception as e:  # muestra el error real (Streamlit lo oculta por defecto)
+                    st.sidebar.error(f"Error técnico: {type(e).__name__}: {e}")
             if fila and fila[0]["pin_hash"] and secrets.compare_digest(hash_pin(p, fila[0]["salt"]), fila[0]["pin_hash"]):
                 st.session_state.usuario = n
                 st.rerun()
