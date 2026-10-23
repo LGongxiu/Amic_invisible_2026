@@ -95,7 +95,7 @@ PISTAS_POR_DEFECTO = [
     "Cuenta una manía, costumbre o rutina que TÚ hagas todos los días en tu vida real, camuflada con el estilo de tu personaje.",
     "Describe qué te encanta hacer en tu tiempo libre real o cuál es tu mayor afición.",
     "Define cómo es tu propio carácter real (si eres tímido, fiestero, despistado, muy ordenado, etc.).",
-    "PISTAS DOBLES: 1) Cuenta una anécdota real, divertida o "tierra trágame" que te haya pasado a TI en tu vida real. 2) Comparte lo último que has comprado (¡Atrévete a decir la verdad!).",
+    "PISTAS DOBLES: 1) Cuenta una anécdota divertida que te haya pasado a TI en tu vida real. 2) Comparte lo último que has comprado (¡Atrévete a decir la verdad!).",
 ]
 PREMIO_POR_DEFECTO = "Un premio sorpresa para quien más puntos consiga. ¡El organizador lo anunciará!"
 
