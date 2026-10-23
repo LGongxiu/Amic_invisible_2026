@@ -488,6 +488,26 @@ def guardar_imagen(datos, carpeta, max_lado=1000, nombre_original="foto.jpg"):
         return ruta
 
 
+# ---------------------------------------------------------------- RANKING OCULTO Y REINICIO DEL ENSAYO
+def ranking_oculto():
+    """True si los jugadores NO deben ver la clasificación: opción activada por el organizador,
+    desde la penúltima votación y hasta que se active la revelación final."""
+    return ajuste("ocultar_ranking", "0") == "1" and hoy() >= RONDAS[-2][1] and not revelacion_activa()
+
+
+def reiniciar_ensayo():
+    """Borra publicaciones, comentarios, reacciones, votos y bloqueos de PIN.
+    Conserva jugadores, personajes, amigos invisibles, PIN, fotos de perfil y ajustes (pistas, premio...)."""
+    for tabla in ("pistas", "comentarios", "reacciones", "votos", "intentos"):
+        q(f"DELETE FROM {tabla}")
+    guardar_ajuste("revelacion", "0")
+    if os.path.isdir(IMG_DIR):  # fotos subidas al muro (las fotos de perfil están en otra carpeta)
+        for f in os.listdir(IMG_DIR):
+            ruta = os.path.join(IMG_DIR, f)
+            if os.path.isfile(ruta):
+                os.remove(ruta)
+
+
 # ---------------------------------------------------------------- SESIÓN / LOGIN
 st.sidebar.title("🎄 Menú")
 
@@ -584,6 +604,8 @@ if pagina == "🎁 Mi perfil":
 
     st.success(f"🏆 **Premio:** {ajuste('premio', PREMIO_POR_DEFECTO)}")
     votos_fechas = ", ".join(r[1].strftime("%d/%m") for r in RONDAS)
+    nota_ranking = (f"\n\n🙈 Para mantener el suspense, desde el {RONDAS[-2][1].strftime('%d/%m')} el ranking se esconde hasta la revelación final."
+                    if ajuste("ocultar_ranking", "0") == "1" else "")
     with st.expander("📖 Cómo se juega", expanded=True):
         st.markdown(f"""
 **Es un amigo invisible con un juego doble.**
@@ -593,7 +615,7 @@ if pagina == "🎁 Mi perfil":
 3. **🕵️‍♂️ Pistas:** desde el {RONDAS[0][0].strftime('%d/%m')} hay una pista cada semana (la verás fijada en el muro). Respóndela como tu personaje, con un dato verdadero pero vago sobre ti.
 4. **🗳️ Votaciones:** los días {votos_fechas} adivinas qué personaje es cada persona y qué personaje es tu amigo invisible (el que te hace el regalo).
 5. **⭐ Puntos:** {PUNTOS_PERSONAJE} punto por cada personaje acertado y {PUNTOS_AMIGO} por acertar tu amigo invisible. Los puntos se acumulan cada semana. Los detectives externos ganan +{PUNTOS_BONUS_DETECTIVE} extra por votación si completan toda la quiniela.
-6. **🎉 Final:** el {FIN_JUEGO.strftime('%d/%m')} se hace la revelación y gana quien más puntos tenga. En caso de empate, gana quien tenga más puntos en la última votación (y si sigue el empate, en la anterior).
+6. **🎉 Final:** el {FIN_JUEGO.strftime('%d/%m')} se hace la revelación y gana quien más puntos tenga. En caso de empate, gana quien tenga más puntos en la última votación (y si sigue el empate, en la anterior).{nota_ranking}
 
 💬 Además, en el muro puedes escribir mensajes libres, comentar y reaccionar con emojis cuando quieras.
 """)
@@ -776,6 +798,12 @@ elif pagina == "🗳️ Votaciones":
 # ---------------------------------------------------------------- RANKING
 elif pagina == "🏆 Ranking":
     st.header("🏆 Ranking global")
+    if ranking_oculto():
+        if st.session_state.get("admin"):
+            st.warning("🙈 Los jugadores NO ven este ranking ahora (recta final). Solo lo ves tú como organizador.")
+        else:
+            st.info("🙈 ¡Suspense! En la recta final el ranking está oculto. Se mostrará en la revelación final.")
+            st.stop()
     pts = calcular_puntos()
     if not pts:
         st.info("Aún no hay jugadores.")
@@ -1018,3 +1046,25 @@ elif pagina == "⚙️ Organizador":
     msgs = mensajes_whatsapp(enlace.strip())
     elegido_msg = st.selectbox("Mensaje", list(msgs.keys()))
     st.code(msgs[elegido_msg], language=None)
+
+    st.subheader("13. Ranking oculto en la recta final")
+    st.caption(f"Si lo activas, los jugadores no ven el ranking desde el {RONDAS[-2][1].strftime('%d/%m')} (penúltima votación) "
+               "hasta que actives la revelación final (sección 6). Tú siempre lo ves.")
+    oc = ajuste("ocultar_ranking", "0") == "1"
+    nuevo_oc = st.checkbox("🙈 Ocultar el ranking a los jugadores en la recta final", value=oc, key="chk_ocultar")
+    if nuevo_oc != oc:
+        guardar_ajuste("ocultar_ranking", "1" if nuevo_oc else "0")
+        st.rerun()
+
+    st.subheader("14. Reiniciar tras el ensayo")
+    st.caption("Borra publicaciones, comentarios, reacciones, votos y bloqueos de PIN, y desactiva la revelación final. "
+               "Se conservan los jugadores, sus personajes, amigos invisibles y PIN, las fotos de perfil, las pistas, el premio y el resto de ajustes.")
+    with st.form("reinicio"):
+        conf_rei = st.checkbox("Entiendo que esto borra todo lo escrito y votado hasta ahora")
+        if st.form_submit_button("🧹 Reiniciar tras el ensayo"):
+            if not conf_rei:
+                st.error("Marca la casilla de confirmación.")
+            else:
+                reiniciar_ensayo()
+                st.session_state.pop("muro_limite", None)
+                st.success("Listo ✅ El juego está limpio y conserva los jugadores y sus PIN.")
