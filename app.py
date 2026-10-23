@@ -420,6 +420,74 @@ def calcular_puntos():
     return pts
 
 
+# ---------------------------------------------------------------- RANKING, AVISOS E IMÁGENES
+def ordenar_ranking(pts):
+    """Ordena por puntos totales. Desempate: más puntos en la última votación, luego en la anterior, etc.
+    Los que siguen empatados comparten posición. Devuelve [(posición, nombre), ...]."""
+    def clave(n):
+        return (-sum(pts[n]), tuple(-x for x in reversed(pts[n])))
+    orden = sorted(pts, key=lambda n: (clave(n), n.lower()))
+    res, pos, ant = [], 0, None
+    for k, n in enumerate(orden, start=1):
+        if clave(n) != ant:
+            pos, ant = k, clave(n)
+        res.append((pos, n))
+    return res
+
+
+def quien_ha_votado(ronda):
+    """Devuelve (han votado, faltan). Solo mira SI han votado, nunca qué han votado."""
+    votaron = {r["votante"] for r in q("SELECT DISTINCT votante FROM votos WHERE ronda=?", (ronda,), fetch=True)}
+    todos = [j["nombre"] for j in jugadores()]
+    return [n for n in todos if n in votaron], [n for n in todos if n not in votaron]
+
+
+def mensajes_whatsapp(enlace=""):
+    ln = f"\n🔗 {enlace}" if enlace else ""
+    premio = ajuste("premio", PREMIO_POR_DEFECTO)
+    m = {}
+    for i, (ini, voto) in enumerate(RONDAS):
+        m[f"Semana {i + 1} · empieza la pista ({ini.strftime('%d/%m')})"] = (
+            f"🎭 ¡Empieza la semana {i + 1} del Amigo Invisible Doble!\n"
+            f"📌 Pista: {pista_semana(i)}\n"
+            f"Respóndela en el muro como si fueras tu personaje. Se vota el {voto.strftime('%d/%m')}.{ln}")
+        if i < len(RONDAS) - 1:
+            m[f"Votación {i + 1} · hoy se vota ({voto.strftime('%d/%m')})"] = (
+                f"🗳️ ¡Hoy se vota (votación {i + 1})! Entra en «Votaciones», adivina qué personaje es cada uno "
+                f"y quién es tu amigo invisible. ¡Los puntos se acumulan!{ln}")
+        else:
+            m[f"Votación {i + 1} · ÚLTIMA votación ({voto.strftime('%d/%m')})"] = (
+                f"🏁 ¡ÚLTIMA votación! Hoy es la última oportunidad de sumar puntos. "
+                f"Después, revelación final y premio 🏆 {premio}{ln}")
+    m["Revelación final y ganador"] = (
+        f"🎉 ¡Se acabó el juego! Ya puedes ver en «Ranking» la clasificación final y quién era cada personaje. "
+        f"🏆 Premio: {premio}{ln}")
+    return m
+
+
+def guardar_imagen(datos, carpeta, max_lado=1000, nombre_original="foto.jpg"):
+    """Guarda la foto reducida (carga más rápido). Los GIF/WebP animados se guardan tal cual. Devuelve la ruta."""
+    ext = nombre_original.rsplit(".", 1)[-1].lower()
+    try:
+        from PIL import Image, ImageOps
+        img = Image.open(io.BytesIO(datos))
+        if getattr(img, "is_animated", False):
+            raise ValueError("animada")
+        img = ImageOps.exif_transpose(img)
+        img.thumbnail((max_lado, max_lado))
+        ruta = os.path.join(carpeta, uuid.uuid4().hex)
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            img.convert("RGBA").save(ruta + ".png", optimize=True)
+            return ruta + ".png"
+        img.convert("RGB").save(ruta + ".jpg", quality=82, optimize=True)
+        return ruta + ".jpg"
+    except Exception:
+        ruta = os.path.join(carpeta, f"{uuid.uuid4().hex}.{ext}")
+        with open(ruta, "wb") as f:
+            f.write(datos)
+        return ruta
+
+
 # ---------------------------------------------------------------- SESIÓN / LOGIN
 st.sidebar.title("🎄 Menú")
 
@@ -525,7 +593,7 @@ if pagina == "🎁 Mi perfil":
 3. **🕵️‍♂️ Pistas:** desde el {RONDAS[0][0].strftime('%d/%m')} hay una pista cada semana (la verás fijada en el muro). Respóndela como tu personaje, con un dato verdadero pero vago sobre ti.
 4. **🗳️ Votaciones:** los días {votos_fechas} adivinas qué personaje es cada persona y qué personaje es tu amigo invisible (el que te hace el regalo).
 5. **⭐ Puntos:** {PUNTOS_PERSONAJE} punto por cada personaje acertado y {PUNTOS_AMIGO} por acertar tu amigo invisible. Los puntos se acumulan cada semana. Los detectives externos ganan +{PUNTOS_BONUS_DETECTIVE} extra por votación si completan toda la quiniela.
-6. **🎉 Final:** el {FIN_JUEGO.strftime('%d/%m')} se hace la revelación y gana quien más puntos tenga.
+6. **🎉 Final:** el {FIN_JUEGO.strftime('%d/%m')} se hace la revelación y gana quien más puntos tenga. En caso de empate, gana quien tenga más puntos en la última votación (y si sigue el empate, en la anterior).
 
 💬 Además, en el muro puedes escribir mensajes libres, comentar y reaccionar con emojis cuando quieras.
 """)
@@ -557,10 +625,7 @@ elif pagina == "🕵️‍♂️ Muro de pistas":
             if st.form_submit_button("Publicar"):
                 ruta = ""
                 if tipo == "Subir foto" and foto is not None:
-                    ext = foto.name.rsplit(".", 1)[-1].lower()
-                    ruta = os.path.join(IMG_DIR, f"{uuid.uuid4().hex}.{ext}")
-                    with open(ruta, "wb") as f:
-                        f.write(foto.getvalue())
+                    ruta = guardar_imagen(foto.getvalue(), IMG_DIR, 1000, foto.name)
                 url_ok = url.strip() if tipo == "Enlace (GIF o imagen)" else ""
                 if es_pista and not semanas:
                     st.error("Las pistas aún no han empezado. Elige «Mensaje libre».")
@@ -574,8 +639,13 @@ elif pagina == "🕵️‍♂️ Muro de pistas":
                     st.error("La publicación no puede estar vacía.")
     st.markdown("---")
     st.markdown("### 📜 Historial del muro")
+    if st.button("🔄 Actualizar muro"):
+        st.rerun()
+    limite = st.session_state.get("muro_limite", 15)
+    total = q("SELECT COUNT(*) AS n FROM pistas", fetch=True)[0]["n"]
+    st.caption(f"{total} publicaciones" + (f" · mostrando las últimas {limite}" if total > limite else ""))
     avatares = todos_los_avatares()
-    for p in q("SELECT * FROM pistas ORDER BY id DESC", fetch=True):
+    for p in q("SELECT * FROM pistas ORDER BY id DESC LIMIT ?", (limite,), fetch=True):
         if (p["tipo"] or "pista") == "mensaje":
             sub = f"💬 **{p['personaje']}** dice:"
         else:
@@ -627,6 +697,11 @@ elif pagina == "🕵️‍♂️ Muro de pistas":
                 if p["imagen"] and os.path.exists(p["imagen"]):
                     os.remove(p["imagen"])
                 st.rerun()
+
+    if total > limite:
+        if st.button("⬇️ Ver más publicaciones"):
+            st.session_state.muro_limite = limite + 15
+            st.rerun()
 
 # ---------------------------------------------------------------- VOTACIONES
 elif pagina == "🗳️ Votaciones":
@@ -705,10 +780,12 @@ elif pagina == "🏆 Ranking":
     if not pts:
         st.info("Aún no hay jugadores.")
     else:
-        orden = sorted(pts, key=lambda n: -sum(pts[n]))
+        clasif = ordenar_ranking(pts)
+        orden = [n for _, n in clasif]
+        posicion = {n: pos for pos, n in clasif}
         filas = []
         for n in orden:
-            f = {"Jugador": n}
+            f = {"#": posicion[n], "Jugador": n}
             for i, v in enumerate(pts[n]):
                 f[f"V{i + 1}"] = v
             f["Total"] = sum(pts[n])
@@ -716,12 +793,20 @@ elif pagina == "🏆 Ranking":
         st.dataframe(filas, hide_index=True, use_container_width=True)
         if any(j["rol"] == "Detective" for j in jugadores()):
             st.caption(f"Los detectives externos ganan +{PUNTOS_BONUS_DETECTIVE} punto extra por votación si completan toda la quiniela.")
+        st.caption("Desempate: gana quien tenga más puntos en la última votación (y si sigue el empate, en la anterior). Si aun así empatan, comparten posición.")
+
+        ultima = max([i for i in range(len(RONDAS)) if any(pts[n][i] for n in pts)], default=-1)
+        if ultima >= 0:
+            import pandas as pd
+            acum = {n: [sum(pts[n][:i + 1]) for i in range(ultima + 1)] for n in orden}
+            st.markdown("### 📈 Evolución de los puntos")
+            st.line_chart(pd.DataFrame(acum, index=[f"V{i + 1}" for i in range(ultima + 1)]))
 
         medallas = ["🥇", "🥈", "🥉"]
         txt = f"🎄 *Clasificación Amigo Invisible Doble* 🎅\n{hoy().strftime('%d/%m/%Y')}\n\n"
         for k, n in enumerate(orden):
             partes = ", ".join(f"V{i + 1}: {v}" for i, v in enumerate(pts[n]) if v)
-            txt += f"{medallas[k] if k < 3 else str(k + 1) + '.'} *{n}* – {sum(pts[n])} pts" + (f" ({partes})" if partes else "") + "\n"
+            txt += f"{medallas[posicion[n] - 1] if posicion[n] <= 3 else str(posicion[n]) + '.'} *{n}* – {sum(pts[n])} pts" + (f" ({partes})" if partes else "") + "\n"
         txt += f"\n{PUNTOS_PERSONAJE} punto por personaje y {PUNTOS_AMIGO} por tu amigo invisible. ¡Se acumulan! 🏆"
         st.markdown("### 📲 Informe para WhatsApp")
         st.code(txt, language=None)
@@ -827,10 +912,7 @@ elif pagina == "⚙️ Organizador":
             if foto_av is None:
                 st.error("Elige primero una imagen.")
             else:
-                ext = foto_av.name.rsplit(".", 1)[-1].lower()
-                ruta = os.path.join(AVATAR_DIR, f"{uuid.uuid4().hex}.{ext}")
-                with open(ruta, "wb") as f:
-                    f.write(foto_av.getvalue())
+                ruta = guardar_imagen(foto_av.getvalue(), AVATAR_DIR, 400, foto_av.name)
                 vieja = avs.get(pers_sel)
                 q("INSERT OR REPLACE INTO avatares VALUES (?,?)", (pers_sel, ruta))
                 if vieja and os.path.exists(vieja):
@@ -917,3 +999,22 @@ elif pagina == "⚙️ Organizador":
             else:
                 cambiar_admin_pin(nuevo1)
                 st.success("PIN de organizador cambiado ✅ (a partir de ahora entra con el nuevo).")
+
+    st.subheader("11. Quién ha votado")
+    st.caption("Solo ves si cada jugador ha votado, nunca lo que ha votado.")
+    rsel = st.selectbox("Votación", list(range(len(RONDAS))), key="rsel_votos",
+                        format_func=lambda i: f"Votación {i + 1} ({RONDAS[i][1].strftime('%d/%m')})")
+    votaron, faltan = quien_ha_votado(rsel)
+    st.markdown(f"✅ **Han votado ({len(votaron)}):** " + (", ".join(votaron) or "nadie todavía"))
+    st.markdown(f"⏳ **Faltan ({len(faltan)}):** " + (", ".join(faltan) or "¡nadie, han votado todos!"))
+    if faltan:
+        st.code(f"🗳️ ¡Recordatorio! Aún falta votar (votación {rsel + 1}, {RONDAS[rsel][1].strftime('%d/%m')}): "
+                f"{', '.join(faltan)}. Entrad en la web, apartado «Votaciones».", language=None)
+
+    st.subheader("12. Mensajes de WhatsApp para el grupo")
+    enlace = st.text_input("Enlace de la web (se incluirá en los mensajes)", value=ajuste("enlace", ""), key="enlace_web")
+    if enlace.strip() != ajuste("enlace", ""):
+        guardar_ajuste("enlace", enlace.strip())
+    msgs = mensajes_whatsapp(enlace.strip())
+    elegido_msg = st.selectbox("Mensaje", list(msgs.keys()))
+    st.code(msgs[elegido_msg], language=None)
