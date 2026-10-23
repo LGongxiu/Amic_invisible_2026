@@ -17,6 +17,22 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Mountains+of+Christmas:wght@400;700&display=swap');
 .stApp { background-color: #0B2515; color: #F4EBE1; }
 [data-testid="stSidebar"] { background-color: #06190E; }
+/* Barra superior y menú de Streamlit con los colores de la web */
+header[data-testid="stHeader"], [data-testid="stHeader"], [data-testid="stToolbar"] { background-color: #0B2515 !important; }
+[data-testid="stDecoration"] { background: #0B2515 !important; background-image: none !important; }
+[data-testid="stHeader"] button, [data-testid="stHeader"] svg, [data-testid="stToolbar"] svg,
+[data-testid="stToolbar"] button, [data-testid="stMainMenu"] svg { color: #F4EBE1 !important; fill: #F4EBE1 !important; }
+[data-testid="stHeader"] button:hover, [data-testid="stToolbar"] button:hover { background-color: #143F24 !important; }
+div[data-baseweb="popover"][data-testid="stMainMenuPopover"],
+div[data-baseweb="popover"][data-testid="stMainMenuPopover"] ul,
+div[data-baseweb="popover"][data-testid="stMainMenuPopover"] li,
+div[data-baseweb="popover"][data-testid="stMainMenuPopover"] div { background-color: #143F24 !important; }
+div[data-baseweb="popover"][data-testid="stMainMenuPopover"] *,
+div[data-baseweb="popover"][data-testid="stMainMenuPopover"] svg { color: #F4EBE1 !important; fill: #F4EBE1 !important; }
+div[data-baseweb="popover"][data-testid="stMainMenuPopover"] li:hover,
+div[data-baseweb="popover"][data-testid="stMainMenuPopover"] li:hover div { background-color: #721C24 !important; }
+[data-testid="main-menu-divider"], div[data-baseweb="popover"][data-testid="stMainMenuPopover"] hr { border-color: #721C24 !important; background-color: #721C24 !important; }
+div[role="dialog"] { background-color: #0B2515 !important; color: #F4EBE1 !important; border: 1px solid #721C24; }
 /* Desplegable del organizador: mismo color que el fondo del menú */
 [data-testid="stExpander"], [data-testid="stExpander"] details, [data-testid="stExpander"] summary,
 [data-testid="stExpander"] details > div { background-color: #06190E !important; color: #F4EBE1 !important; }
