@@ -6,6 +6,11 @@ import secrets
 import os
 import uuid
 import html
+import io
+import json
+import time
+import zipfile
+import tempfile
 from contextlib import closing
 from datetime import date, timedelta
 
@@ -82,6 +87,17 @@ RONDAS = [
 FIN_JUEGO = date(2026, 12, 25)
 PUNTOS_PERSONAJE = 1
 PUNTOS_AMIGO = 2
+PUNTOS_BONUS_DETECTIVE = 1   # +1 por votación si el detective completa toda la quiniela
+MAX_FALLOS = 5               # intentos de PIN fallidos antes de bloquear
+BLOQUEO_SEGUNDOS = 300       # 5 minutos de bloqueo
+
+PISTAS_POR_DEFECTO = [
+    "Cuéntanos, como tu personaje, una comida o bebida que te guste de verdad.",
+    "Una serie, película o canción que te guste de verdad, dicha como lo haría tu personaje.",
+    "Algo que llevas siempre encima o una manía que tengas, sin decir cuál es tu personaje.",
+    "PISTAS DOBLES: 1) una frase o un GIF muy típico de tu personaje. 2) una anécdota real que la familia reconozca, contada como tu personaje y sin nombres.",
+]
+PREMIO_POR_DEFECTO = "Un premio sorpresa para quien más puntos consiga. ¡El organizador lo anunciará!"
 
 PERSONAJES_POR_DEFECTO = [
     "El Grinch", "Darth Vader", "Harry Potter", "Miércoles Addams", "Jack Sparrow", "Santa Claus",
@@ -126,6 +142,8 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, pista_id INTEGER, personaje TEXT, texto TEXT)""")
     q("CREATE TABLE IF NOT EXISTS avatares (personaje TEXT PRIMARY KEY, ruta TEXT)")
     q("CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)")
+    q("CREATE TABLE IF NOT EXISTS intentos (clave TEXT PRIMARY KEY, fallos INTEGER, bloqueado_hasta REAL)")
+    q("CREATE TABLE IF NOT EXISTS reacciones (pista_id INTEGER, jugador TEXT, emoji TEXT, PRIMARY KEY (pista_id, jugador, emoji))")
 
 
 init_db()
@@ -225,22 +243,180 @@ def semanas_empezadas():
     return [i + 1 for i, r in enumerate(RONDAS) if r[0] <= hoy()]
 
 
+# ---------------------------------------------------------------- AJUSTES, SEGURIDAD, COPIAS
+def ajuste(clave, defecto=""):
+    r = q("SELECT valor FROM ajustes WHERE clave=?", (clave,), fetch=True)
+    return r[0]["valor"] if r else defecto
+
+
+def guardar_ajuste(clave, valor):
+    q("INSERT OR REPLACE INTO ajustes VALUES (?,?)", (clave, valor))
+
+
+def pool_personajes():
+    return [x.strip() for x in ajuste("personajes", "\n".join(PERSONAJES_POR_DEFECTO)).splitlines() if x.strip()]
+
+
+def pista_semana(i):
+    return ajuste(f"pista_{i}", PISTAS_POR_DEFECTO[i] if i < len(PISTAS_POR_DEFECTO) else "")
+
+
+# --- PIN del organizador (se puede cambiar desde el panel; se guarda cifrado)
+def admin_pin_valido(pin):
+    r = q("SELECT valor FROM ajustes WHERE clave='admin_pin'", fetch=True)
+    if r:
+        salt, h = r[0]["valor"].split(":")
+        return secrets.compare_digest(hash_pin(pin, salt).encode(), h.encode())
+    return secrets.compare_digest(str(pin).encode(), str(ADMIN_PIN).encode())
+
+
+def admin_pin_por_defecto():
+    return not q("SELECT 1 FROM ajustes WHERE clave='admin_pin'", fetch=True) and str(ADMIN_PIN) == "admin1234"
+
+
+def cambiar_admin_pin(nuevo):
+    salt = secrets.token_hex(8)
+    guardar_ajuste("admin_pin", f"{salt}:{hash_pin(nuevo, salt)}")
+
+
+# --- Bloqueo tras demasiados PIN fallidos
+def segundos_bloqueo(clave):
+    r = q("SELECT bloqueado_hasta FROM intentos WHERE clave=?", (clave,), fetch=True)
+    return max(0, int(r[0]["bloqueado_hasta"] - time.time())) if r and r[0]["bloqueado_hasta"] else 0
+
+
+def registrar_fallo(clave):
+    """Suma un fallo. Devuelve True si con este fallo la cuenta queda bloqueada."""
+    r = q("SELECT fallos FROM intentos WHERE clave=?", (clave,), fetch=True)
+    fallos = (r[0]["fallos"] if r else 0) + 1
+    bloquea = fallos >= MAX_FALLOS
+    q("INSERT OR REPLACE INTO intentos VALUES (?,?,?)",
+      (clave, 0 if bloquea else fallos, time.time() + BLOQUEO_SEGUNDOS if bloquea else 0))
+    return bloquea
+
+
+def limpiar_fallos(clave):
+    q("DELETE FROM intentos WHERE clave=?", (clave,))
+
+
+# --- Cuenta atrás
+def _dias(d):
+    return "queda 1 día" if d == 1 else f"quedan {d} días"
+
+
+def cuenta_atras():
+    h = hoy()
+    if h < RONDAS[0][0]:
+        return f"⏳ Las pistas empiezan el {RONDAS[0][0].strftime('%d/%m')}: {_dias((RONDAS[0][0] - h).days)}."
+    if h > FIN_JUEGO:
+        return "🎉 El juego ha terminado. ¡Gracias por jugar!"
+    for i, r in enumerate(RONDAS):
+        if r[1] == h:
+            return f"🗳️ ¡Hoy se vota (votación {i + 1})! Entra en «Votaciones»."
+    for i, r in enumerate(RONDAS):
+        if r[1] > h:
+            return f"⏳ Próxima votación ({i + 1}) el {r[1].strftime('%d/%m')}: {_dias((r[1] - h).days)}."
+    return ""
+
+
+# --- Añadir un jugador sin repetir el sorteo
+def anadir_jugador(nombre, rol):
+    """Crea un jugador nuevo. Si es participante, se mete en la cadena del amigo invisible
+    (a → b pasa a ser a → nuevo → b) respetando las exclusiones. Devuelve (pin, personaje)."""
+    nombre = nombre.strip()
+    if not nombre:
+        raise ValueError("Escribe un nombre.")
+    if q("SELECT 1 FROM jugadores WHERE lower(nombre)=lower(?)", (nombre,), fetch=True):
+        raise ValueError("Ya existe un jugador con ese nombre.")
+    js = jugadores()
+    usados = {j["personaje"] for j in js}
+    libres = [c for c in pool_personajes() if c not in usados]
+    if not libres:
+        raise ValueError("No quedan personajes libres. Añade más personajes a la lista y repite el sorteo.")
+    regala = "Ninguno"
+    if rol == "Participante":
+        partic = [j for j in js if j["rol"] == "Participante"]
+        if len(partic) < 2:
+            raise ValueError("Hacen falta al menos 2 participantes ya creados.")
+        prohibidos = {tuple(x) for x in json.loads(ajuste("exclusiones", "[]"))}
+        validas = [j for j in partic
+                   if (j["nombre"], nombre) not in prohibidos and (nombre, j["regala_a"]) not in prohibidos]
+        if not validas:
+            raise ValueError("Con las exclusiones actuales no se puede encajar sin repetir el sorteo.")
+        a = random.choice(validas)
+        regala = a["regala_a"]
+        q("UPDATE jugadores SET regala_a=? WHERE nombre=?", (nombre, a["nombre"]))
+    pin = nuevo_pin()
+    pers = random.choice(libres)
+    q("INSERT INTO jugadores (nombre, rol, personaje, regala_a) VALUES (?,?,?,?)", (nombre, rol, pers, regala))
+    poner_pin(nombre, pin)
+    return pin, pers
+
+
+# --- Copia de seguridad (base de datos + fotos) en un .zip
+def crear_copia_zip():
+    buf = io.BytesIO()
+    with tempfile.TemporaryDirectory() as td:
+        destino = os.path.join(td, "juego_navidad.db")
+        with closing(sqlite3.connect(DB_FILE)) as origen, closing(sqlite3.connect(destino)) as dest:
+            origen.backup(dest)
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(destino, "juego_navidad.db")
+            for carpeta in (IMG_DIR, AVATAR_DIR):
+                for raiz, _, archivos in os.walk(carpeta):
+                    for a in archivos:
+                        ruta = os.path.join(raiz, a)
+                        z.write(ruta, ruta.replace(os.sep, "/"))
+    return buf.getvalue()
+
+
+def restaurar_copia_zip(datos):
+    with zipfile.ZipFile(io.BytesIO(datos)) as z:
+        nombres = z.namelist()
+        if "juego_navidad.db" not in nombres:
+            raise ValueError("El archivo no es una copia válida (falta juego_navidad.db).")
+        with tempfile.TemporaryDirectory() as td:
+            tmp = os.path.join(td, "nueva.db")
+            with open(tmp, "wb") as f:
+                f.write(z.read("juego_navidad.db"))
+            with closing(sqlite3.connect(tmp)) as src:
+                src.execute("SELECT 1 FROM jugadores LIMIT 1")  # comprueba que es nuestra base de datos
+                with closing(sqlite3.connect(DB_FILE, timeout=15)) as dst:
+                    src.backup(dst)
+        for nombre in nombres:
+            if nombre.endswith("/") or ".." in nombre or nombre.startswith("/"):
+                continue
+            if nombre.startswith((IMG_DIR + "/", AVATAR_DIR + "/")):
+                os.makedirs(os.path.dirname(nombre), exist_ok=True)
+                with open(nombre, "wb") as f:
+                    f.write(z.read(nombre))
+    init_db()
+
+
 # ---------------------------------------------------------------- PUNTUACIÓN (calculada desde los votos)
 def calcular_puntos():
     js = jugadores()
     char_de = {j["nombre"]: j["personaje"] for j in js}
     dueno = {j["personaje"]: j["nombre"] for j in js}
     regala = {j["nombre"]: j["regala_a"] for j in js}
+    rol = {j["nombre"]: j["rol"] for j in js}
     pts = {j["nombre"]: [0] * len(RONDAS) for j in js}
+    completos = {}
     for v in q("SELECT * FROM votos", fetch=True):
-        if v["votante"] not in pts:
+        if v["votante"] not in pts or v["ronda"] >= len(RONDAS):
             continue
-        if v["tipo"] == "P" and char_de.get(v["objetivo"]) == v["personaje"]:
-            pts[v["votante"]][v["ronda"]] += PUNTOS_PERSONAJE
+        if v["tipo"] == "P":
+            completos.setdefault((v["ronda"], v["votante"]), set()).add(v["objetivo"])
+            if char_de.get(v["objetivo"]) == v["personaje"]:
+                pts[v["votante"]][v["ronda"]] += PUNTOS_PERSONAJE
         elif v["tipo"] == "A":
             d = dueno.get(v["personaje"])
             if d and regala.get(d) == v["votante"]:
                 pts[v["votante"]][v["ronda"]] += PUNTOS_AMIGO
+    # Bonus para los detectives externos que completan toda la quiniela
+    for (r, votante), objetivos in completos.items():
+        if rol.get(votante) == "Detective" and len(objetivos) >= len(js) - 1:
+            pts[votante][r] += PUNTOS_BONUS_DETECTIVE
     return pts
 
 
@@ -256,17 +432,25 @@ if st.session_state.usuario is None:
         n = st.selectbox("Tu nombre", ["—"] + nombres)
         p = st.text_input("Tu PIN", type="password", max_chars=4)
         if st.form_submit_button("Entrar"):
+            elegido = bool(n) and n != "—"
+            espera = segundos_bloqueo(n) if elegido else 0
             fila = []
-            if n and n != "—":
-                try:
-                    fila = q("SELECT * FROM jugadores WHERE nombre=?", (n,), fetch=True)
-                except Exception as e:  # muestra el error real (Streamlit lo oculta por defecto)
-                    st.sidebar.error(f"Error técnico: {type(e).__name__}: {e}")
-            if fila and fila[0]["pin_hash"] and secrets.compare_digest(hash_pin(p, fila[0]["salt"]), fila[0]["pin_hash"]):
-                st.session_state.usuario = n
-                st.rerun()
+            if espera:
+                st.sidebar.error(f"Demasiados intentos fallidos. Espera {espera // 60 + 1} min e inténtalo de nuevo.")
             else:
-                st.sidebar.error("Nombre o PIN incorrectos.")
+                if elegido:
+                    try:
+                        fila = q("SELECT * FROM jugadores WHERE nombre=?", (n,), fetch=True)
+                    except Exception as e:  # muestra el error real (Streamlit lo oculta por defecto)
+                        st.sidebar.error(f"Error técnico: {type(e).__name__}: {e}")
+                if fila and fila[0]["pin_hash"] and secrets.compare_digest(hash_pin(p, fila[0]["salt"]), fila[0]["pin_hash"]):
+                    limpiar_fallos(n)
+                    st.session_state.usuario = n
+                    st.rerun()
+                elif elegido and registrar_fallo(n):
+                    st.sidebar.error(f"Demasiados intentos fallidos. Bloqueado {BLOQUEO_SEGUNDOS // 60} minutos.")
+                else:
+                    st.sidebar.error("Nombre o PIN incorrectos.")
 else:
     st.sidebar.success(f"Hola, {st.session_state.usuario}")
     if st.sidebar.button("Salir"):
@@ -277,9 +461,15 @@ with st.sidebar.expander("👑 Organizador"):
     if not st.session_state.get("admin"):
         ap = st.text_input("PIN de organizador", type="password", key="ap")
         if st.button("Entrar como organizador"):
-            if ap == ADMIN_PIN:
+            espera = segundos_bloqueo("__admin__")
+            if espera:
+                st.error(f"Demasiados intentos. Espera {espera // 60 + 1} min.")
+            elif admin_pin_valido(ap):
+                limpiar_fallos("__admin__")
                 st.session_state.admin = True
                 st.rerun()
+            elif registrar_fallo("__admin__"):
+                st.error(f"Demasiados intentos. Bloqueado {BLOQUEO_SEGUNDOS // 60} minutos.")
             else:
                 st.error("PIN incorrecto.")
     else:
@@ -295,6 +485,9 @@ pagina = st.sidebar.selectbox("Ir a:", menu)
 usuario = st.session_state.usuario
 
 st.title("🎅 El Banquete de los Impostores Navideños")
+_ca = cuenta_atras()
+if _ca:
+    st.info(_ca)
 
 
 def requiere_login(permitir_admin=False):
@@ -321,11 +514,32 @@ if pagina == "🎁 Mi perfil":
         st.info("🕵️‍♂️ Juegas como **Detective Externo** (sin intercambio de regalos).")
     st.caption("Solo tú ves esta pantalla. No se la enseñes a nadie.")
 
+    st.success(f"🏆 **Premio:** {ajuste('premio', PREMIO_POR_DEFECTO)}")
+    votos_fechas = ", ".join(r[1].strftime("%d/%m") for r in RONDAS)
+    with st.expander("📖 Cómo se juega", expanded=True):
+        st.markdown(f"""
+**Es un amigo invisible con un juego doble.**
+
+1. **🎁 Amigo invisible:** haces un regalo a la persona que te ha tocado (aparece arriba). Alguien te lo hará a ti, y nadie sabe quién.
+2. **🎭 Personajes:** cada jugador tiene un personaje famoso secreto. En el muro escribes **como si fueras tu personaje**, sin decir quién eres.
+3. **🕵️‍♂️ Pistas:** desde el {RONDAS[0][0].strftime('%d/%m')} hay una pista cada semana (la verás fijada en el muro). Respóndela como tu personaje, con un dato verdadero pero vago sobre ti.
+4. **🗳️ Votaciones:** los días {votos_fechas} adivinas qué personaje es cada persona y qué personaje es tu amigo invisible (el que te hace el regalo).
+5. **⭐ Puntos:** {PUNTOS_PERSONAJE} punto por cada personaje acertado y {PUNTOS_AMIGO} por acertar tu amigo invisible. Los puntos se acumulan cada semana. Los detectives externos ganan +{PUNTOS_BONUS_DETECTIVE} extra por votación si completan toda la quiniela.
+6. **🎉 Final:** el {FIN_JUEGO.strftime('%d/%m')} se hace la revelación y gana quien más puntos tenga.
+
+💬 Además, en el muro puedes escribir mensajes libres, comentar y reaccionar con emojis cuando quieras.
+""")
+
 # ---------------------------------------------------------------- MURO DE PISTAS
 elif pagina == "🕵️‍♂️ Muro de pistas":
     yo = requiere_login(permitir_admin=True)
     st.header("🕵️‍♂️ El Muro de los Impostores")
     semanas = list(range(1, len(RONDAS) + 1)) if modo_prueba() else semanas_empezadas()
+    if semanas:
+        _i = semanas[-1] - 1
+        st.success(f"📌 **Pista de la semana {_i + 1}** (votación el {RONDAS[_i][1].strftime('%d/%m')}): {pista_semana(_i)}")
+    else:
+        st.info(f"📌 Las pistas empiezan el {RONDAS[0][0].strftime('%d/%m')}. Mientras tanto, ¡escribe lo que quieras en el muro!")
     if yo is None:
         st.info("Modo organizador: puedes moderar el muro. Para publicar, entra con tu nombre y tu PIN.")
     else:
@@ -373,6 +587,17 @@ elif pagina == "🕵️‍♂️ Muro de pistas":
             mostrar_enlace(p["url"])
         if p["imagen"] and os.path.exists(p["imagen"]):
             show_img(p["imagen"])
+        EMOJIS = ["😂", "❤️", "👀"]
+        reac = q("SELECT emoji, jugador FROM reacciones WHERE pista_id=?", (p["id"],), fetch=True)
+        for ce, em in zip(st.columns([1, 1, 1, 5]), EMOJIS):
+            n_em = sum(1 for r in reac if r["emoji"] == em)
+            mia = usuario is not None and any(r["emoji"] == em and r["jugador"] == usuario for r in reac)
+            if ce.button(f"{em} {n_em}" + (" ✓" if mia else ""), key=f"re_{p['id']}_{em}", disabled=usuario is None):
+                if mia:
+                    q("DELETE FROM reacciones WHERE pista_id=? AND jugador=? AND emoji=?", (p["id"], usuario, em))
+                else:
+                    q("INSERT OR IGNORE INTO reacciones VALUES (?,?,?)", (p["id"], usuario, em))
+                st.rerun()
         coms = q("SELECT * FROM comentarios WHERE pista_id=? ORDER BY id", (p["id"],), fetch=True)
         for c in coms:
             ca, cb = st.columns([1, 9])
@@ -398,6 +623,7 @@ elif pagina == "🕵️‍♂️ Muro de pistas":
             if st.button("🗑️ Eliminar esta publicación", key=f"del_{p['id']}"):
                 q("DELETE FROM pistas WHERE id=?", (p["id"],))
                 q("DELETE FROM comentarios WHERE pista_id=?", (p["id"],))
+                q("DELETE FROM reacciones WHERE pista_id=?", (p["id"],))
                 if p["imagen"] and os.path.exists(p["imagen"]):
                     os.remove(p["imagen"])
                 st.rerun()
@@ -419,6 +645,8 @@ elif pagina == "🗳️ Votaciones":
                q("SELECT * FROM votos WHERE ronda=? AND votante=?", (ronda, usuario), fetch=True)}
     st.caption("Puedes cambiar tu voto y reenviarlo mientras la votación esté abierta. "
                f"{PUNTOS_PERSONAJE} punto por personaje acertado y {PUNTOS_AMIGO} por acertar tu amigo invisible.")
+    if yo["rol"] == "Detective":
+        st.caption(f"🕵️‍♂️ Como detective ganas +{PUNTOS_BONUS_DETECTIVE} punto extra en cada votación si completas toda la quiniela (sin dejar a nadie en «—»).")
 
     # Sin formulario: cada cambio recarga la página para ir quitando de las listas los personajes ya asignados.
     base = f"v_{ronda}_{usuario}_"
@@ -486,6 +714,8 @@ elif pagina == "🏆 Ranking":
             f["Total"] = sum(pts[n])
             filas.append(f)
         st.dataframe(filas, hide_index=True, use_container_width=True)
+        if any(j["rol"] == "Detective" for j in jugadores()):
+            st.caption(f"Los detectives externos ganan +{PUNTOS_BONUS_DETECTIVE} punto extra por votación si completan toda la quiniela.")
 
         medallas = ["🥇", "🥈", "🥉"]
         txt = f"🎄 *Clasificación Amigo Invisible Doble* 🎅\n{hoy().strftime('%d/%m/%Y')}\n\n"
@@ -504,6 +734,8 @@ elif pagina == "🏆 Ranking":
 # ---------------------------------------------------------------- ORGANIZADOR
 elif pagina == "⚙️ Organizador":
     st.header("⚙️ Panel del organizador")
+    if admin_pin_por_defecto():
+        st.warning("⚠️ Sigues usando el PIN de organizador por defecto (admin1234). Cámbialo en la sección 10 de esta página.")
     st.subheader("1. Crear jugadores y hacer el sorteo")
     pool_guardado = q("SELECT valor FROM ajustes WHERE clave='personajes'", fetch=True)
     pool_txt = pool_guardado[0]["valor"] if pool_guardado else "\n".join(PERSONAJES_POR_DEFECTO)
@@ -548,9 +780,10 @@ elif pagina == "⚙️ Organizador":
             elif len(pers) < len(todos):
                 st.error(f"Hay {len(todos)} jugadores y solo {len(pers)} personajes.")
             else:
-                q("DELETE FROM jugadores"); q("DELETE FROM pistas"); q("DELETE FROM votos"); q("DELETE FROM comentarios")
+                q("DELETE FROM jugadores"); q("DELETE FROM pistas"); q("DELETE FROM votos"); q("DELETE FROM comentarios"); q("DELETE FROM reacciones")
                 q("INSERT OR REPLACE INTO ajustes VALUES ('personajes', ?)", ("\n".join(pers),))
                 q("INSERT OR REPLACE INTO ajustes VALUES ('revelacion', '0')")
+                guardar_ajuste("exclusiones", json.dumps(sorted(prohibidos)))
                 random.shuffle(pers)
                 pines = {}
                 for n in todos:
@@ -623,3 +856,64 @@ elif pagina == "⚙️ Organizador":
     if nueva != activa:
         q("INSERT OR REPLACE INTO ajustes VALUES ('revelacion', ?)", ("1" if nueva else "0",))
         st.rerun()
+
+    st.subheader("7. Pistas de la semana y premio")
+    st.caption("La pista de la semana aparece fijada arriba del muro. El premio se ve en «Mi perfil».")
+    with st.form("pistas_premio"):
+        textos = [st.text_area(f"Pista de la semana {i + 1} (votación el {r[1].strftime('%d/%m')})", value=pista_semana(i), height=80)
+                  for i, r in enumerate(RONDAS)]
+        premio_txt = st.text_input("Premio del ganador", value=ajuste("premio", PREMIO_POR_DEFECTO))
+        if st.form_submit_button("Guardar pistas y premio"):
+            for i, t in enumerate(textos):
+                guardar_ajuste(f"pista_{i}", t.strip())
+            guardar_ajuste("premio", premio_txt.strip() or PREMIO_POR_DEFECTO)
+            st.success("Guardado ✅")
+
+    st.subheader("8. Añadir un jugador sin repetir el sorteo")
+    if q("SELECT 1 FROM votos LIMIT 1", fetch=True):
+        st.warning("Ya hay votos. Si añades un participante, a la persona que antes regalaba a otra le cambiará su destinatario, "
+                   "y las apuestas pasadas de ese otro jugador sobre quién le regala se recalcularán.")
+    with st.form("nuevo_jugador", clear_on_submit=True):
+        nom = st.text_input("Nombre del nuevo jugador")
+        rol_n = st.radio("Rol", ["Participante", "Detective"], horizontal=True)
+        if st.form_submit_button("➕ Añadir jugador"):
+            try:
+                pin_n, pers_n = anadir_jugador(nom, rol_n)
+                st.success(f"{nom.strip()} añadido. Su personaje es secreto; solo lo verá al entrar.")
+                st.code(f"🎄 Amigo Invisible Doble\nEntra con tu nombre ({nom.strip()}) y este PIN: {pin_n}", language=None)
+            except ValueError as e:
+                st.error(str(e))
+
+    st.subheader("9. Copia de seguridad")
+    st.caption("En algunos alojamientos (como Streamlit Cloud) el disco puede reiniciarse y borrar los datos. "
+               "Descarga una copia cada pocos días y guárdala en tu ordenador.")
+    if st.button("📦 Preparar copia de seguridad"):
+        st.session_state.copia = crear_copia_zip()
+    if st.session_state.get("copia"):
+        st.download_button("⬇️ Descargar copia (.zip)", st.session_state.copia,
+                           file_name=f"copia_amigo_invisible_{hoy()}.zip", mime="application/zip")
+    with st.form("restaurar"):
+        zip_subido = st.file_uploader("Restaurar desde una copia (.zip)", type=["zip"])
+        conf = st.checkbox("Entiendo que esto sustituye todos los datos actuales")
+        if st.form_submit_button("♻️ Restaurar copia"):
+            if zip_subido is None or not conf:
+                st.error("Elige el archivo y marca la casilla de confirmación.")
+            else:
+                try:
+                    restaurar_copia_zip(zip_subido.getvalue())
+                    st.success("Copia restaurada ✅")
+                except Exception as e:
+                    st.error(f"No se pudo restaurar: {e}")
+
+    st.subheader("10. Cambiar el PIN de organizador")
+    with st.form("admin_pin", clear_on_submit=True):
+        nuevo1 = st.text_input("Nuevo PIN (mínimo 6 caracteres)", type="password")
+        nuevo2 = st.text_input("Repite el nuevo PIN", type="password")
+        if st.form_submit_button("Guardar nuevo PIN"):
+            if len(nuevo1) < 6:
+                st.error("Usa al menos 6 caracteres.")
+            elif nuevo1 != nuevo2:
+                st.error("Los dos PIN no coinciden.")
+            else:
+                cambiar_admin_pin(nuevo1)
+                st.success("PIN de organizador cambiado ✅ (a partir de ahora entra con el nuevo).")
