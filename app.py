@@ -1,134 +1,607 @@
-"""Simulacro del Amigo Invisible Doble.
-Usa la lógica REAL de app.py (base de datos, sorteo, votos, puntuación y fechas) con jugadores
-inventados y una base de datos temporal. No necesita Streamlit instalado ni toca tus datos.
-Uso:  python simulacro.py   (con app.py en la misma carpeta)
-"""
-import os, sys, random, tempfile
-from datetime import date
-from unittest.mock import MagicMock
+import streamlit as st
+import sqlite3
+import random
+import hashlib
+import secrets
+import os
+import uuid
+import html
+from contextlib import closing
+from datetime import date, timedelta
 
-AQUI = os.path.dirname(os.path.abspath(__file__))
-random.seed(2026)
-os.chdir(tempfile.mkdtemp())          # base de datos temporal: nada de lo tuyo se toca
-sys.modules["streamlit"] = MagicMock()  # solo probamos la lógica, no la pantalla
+st.set_page_config(page_title="Amigo Invisible: Liga de Impostores 2026", page_icon="🎄", layout="centered")
 
-src = open(os.path.join(AQUI, "app.py"), encoding="utf-8").read()
-corte = src.index("# ---------------------------------------------------------------- SESIÓN / LOGIN")
-ns = {"__name__": "simulacro"}
-exec(compile(src[:corte], "app.py", "exec"), ns)
-q, derangement = ns["q"], ns["derangement"]
-ok = lambda m: print("  ✅", m)
+# ---------------------------------------------------------------- ESTILO
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Mountains+of+Christmas:wght@400;700&display=swap');
+.stApp { background-color: #0B2515; color: #F4EBE1; }
+[data-testid="stSidebar"] { background-color: #06190E; }
+/* Barra superior de Streamlit (y su línea de colores) del mismo color que el fondo */
+header[data-testid="stHeader"], [data-testid="stHeader"] { background-color: #0B2515 !important; }
+[data-testid="stDecoration"] { background: #0B2515 !important; background-image: none !important; }
+[data-testid="stToolbar"] { background-color: #0B2515 !important; }
+[data-testid="stHeader"] button, [data-testid="stHeader"] svg, [data-testid="stToolbar"] svg { color: #F4EBE1 !important; fill: #F4EBE1 !important; }
+/* Desplegable del organizador: mismo color que el fondo del menú */
+[data-testid="stExpander"], [data-testid="stExpander"] details, [data-testid="stExpander"] summary,
+[data-testid="stExpander"] details > div { background-color: #06190E !important; color: #F4EBE1 !important; }
+[data-testid="stExpander"] details { border: 1px solid #721C24 !important; border-radius: 8px; }
+[data-testid="stExpander"] summary:hover { background-color: #0B2515 !important; }
+[data-testid="stExpander"] summary * { color: #F4EBE1 !important; }
+h1, h2, h3, p, span, label { color: #F4EBE1 !important; }
+p, label { font-family: 'Georgia', serif; }
+h1, h2, h3 { font-family: 'Mountains of Christmas', 'Georgia', cursive !important; font-weight: 700 !important; letter-spacing: 0.5px; }
+h1 { font-size: 3rem !important; color: #E8C46A !important; text-shadow: 2px 2px 0 #721C24; }
+h2, h3 { color: #F4EBE1 !important; }
+div.stButton > button:first-child, div[data-testid="stFormSubmitButton"] > button {
+    background-color: #721C24; color: #F4EBE1; border: 2px solid #A93226;
+    border-radius: 8px; font-weight: bold; transition: all 0.3s ease; }
+div.stButton > button:first-child:hover, div[data-testid="stFormSubmitButton"] > button:hover {
+    background-color: #A93226; color: #FFFFFF; border-color: #C0392B; }
+.stAlert { background-color: #143F24 !important; border-left: 5px solid #721C24 !important; border-radius: 8px; }
+/* Casillas blancas con letra negra */
+div[data-baseweb="input"], div[data-baseweb="select"], div[data-baseweb="textarea"], div[data-baseweb="base-input"] {
+    background-color: #FFFFFF !important; border: 1px solid #721C24 !important; }
+input, select, textarea,
+div[data-baseweb="input"] *, div[data-baseweb="select"] *, div[data-baseweb="textarea"] * {
+    color: #000000 !important; -webkit-text-fill-color: #000000 !important; }
+::placeholder { color: #6B6B6B !important; -webkit-text-fill-color: #6B6B6B !important; opacity: 1; }
+/* Menús desplegables */
+div[data-baseweb="popover"] ul, div[data-baseweb="popover"] li, ul[role="listbox"] { background-color: #FFFFFF !important; }
+div[data-baseweb="popover"] *, ul[role="listbox"] * { color: #000000 !important; }
+/* Zona de subir fotos y bloques de código */
+[data-testid="stFileUploaderDropzone"] *, pre, pre *, code, code * { color: #000000 !important; }
+</style>
+""", unsafe_allow_html=True)
 
-# ------------------------------------------------------------ 1. SORTEO
-print("\n1) SORTEO")
-part = ["Ana", "Luis", "María", "Pedro", "Carmen", "Jorge"]
-det = ["Lucía", "Nico"]
-parejas = [("Ana", "Luis"), ("María", "Pedro")]
-prohibidos = {x for a, b in parejas for x in ((a, b), (b, a))}
-regalos = derangement(part, frozenset(prohibidos))
-assert regalos, "el sorteo no encontró solución"
-pers = ns["PERSONAJES_POR_DEFECTO"][:]
-random.shuffle(pers)
-pines = {}
-for n in part + det:
-    pines[n] = ns["nuevo_pin"]()
-    q("INSERT INTO jugadores (nombre, rol, personaje, regala_a) VALUES (?,?,?,?)",
-      (n, "Participante" if n in part else "Detective", pers.pop(), regalos.get(n, "Ninguno")))
-    ns["poner_pin"](n, pines[n])
-js = [dict(j) for j in ns["jugadores"]()]
-char = {j["nombre"]: j["personaje"] for j in js}
-print("  Reparto:", ", ".join(f"{n}→{regalos[n]}" for n in part))
-assert all(regalos[n] != n for n in part); ok("nadie se regala a sí mismo")
-assert all((a, regalos[a]) not in prohibidos for a in part); ok("las parejas excluidas no se tocan")
-assert sorted(regalos.values()) == sorted(part); ok("cada participante regala una vez y recibe una vez")
-assert len(set(char.values())) == len(js); ok("cada jugador tiene un personaje distinto")
-assert all(j["regala_a"] == "Ninguno" for j in js if j["rol"] == "Detective"); ok("los detectives no tienen amigo invisible")
-f = q("SELECT * FROM jugadores WHERE nombre='Ana'", fetch=True)[0]
-assert ns["hash_pin"](pines["Ana"], f["salt"]) == f["pin_hash"]
-assert ns["hash_pin"]("0000" if pines["Ana"] != "0000" else "1111", f["salt"]) != f["pin_hash"]
-ok("el PIN correcto entra y uno incorrecto no")
+# ---------------------------------------------------------------- CONFIGURACIÓN
+DB_FILE = "juego_navidad.db"
+IMG_DIR = "imagenes"
+AVATAR_DIR = "avatares"
+os.makedirs(IMG_DIR, exist_ok=True)
+os.makedirs(AVATAR_DIR, exist_ok=True)
 
-# ------------------------------------------------------------ 2. CALENDARIO
-print("\n2) CALENDARIO (¿qué votación está abierta cada día?)")
-esperado = {date(2026, 12, 3): [], date(2026, 12, 4): [], date(2026, 12, 10): [], date(2026, 12, 11): [0],
-            date(2026, 12, 17): [0], date(2026, 12, 18): [1], date(2026, 12, 22): [1], date(2026, 12, 23): [2],
-            date(2026, 12, 24): [2], date(2026, 12, 25): [3], date(2026, 12, 26): []}
-for d, exp in esperado.items():
-    ns["hoy"] = lambda d=d: d
-    abiertas = [i for i in range(4) if ns["ronda_abierta"](i)]
-    assert abiertas == exp, (d, abiertas, exp)
-ok("las 4 votaciones se abren y cierran en las fechas pactadas (11, 18, 23 y 25 dic)")
+# (inicio de pistas, día de votación) de cada semana
+RONDAS = [
+    (date(2026, 12, 4), date(2026, 12, 11)),    # primera pista: viernes 4 de diciembre
+    (date(2026, 12, 12), date(2026, 12, 18)),
+    (date(2026, 12, 19), date(2026, 12, 23)),   # votación adelantada
+    (date(2026, 12, 24), date(2026, 12, 25)),   # pistas dobles + votación final
+]
+FIN_JUEGO = date(2026, 12, 25)
+PUNTOS_PERSONAJE = 1
+PUNTOS_AMIGO = 2
 
-# ------------------------------------------------------------ 3. MURO
-print("\n3) MURO")
-q("INSERT INTO pistas (semana, personaje, texto, url, imagen, tipo) VALUES (1,?,?,?,?,?)", (char["Ana"], "Ho ho ho", "", "", "pista"))
-q("INSERT INTO pistas (semana, personaje, texto, url, imagen, tipo) VALUES (0,?,?,?,?,?)", (char["Luis"], "¡Qué ganas de comer turrón!", "", "", "mensaje"))
-q("INSERT INTO comentarios (pista_id, personaje, texto) VALUES (1,?,?)", (char["Pedro"], "Eso suena a alguien que conozco…"))
-assert len(q("SELECT * FROM pistas", fetch=True)) == 2
-assert q("SELECT tipo FROM pistas WHERE id=2", fetch=True)[0]["tipo"] == "mensaje"
-assert len(q("SELECT * FROM comentarios WHERE pista_id=1", fetch=True)) == 1
-ok("pista, mensaje libre y comentario se guardan y se leen bien")
+PERSONAJES_POR_DEFECTO = [
+    "El Grinch", "Darth Vader", "Harry Potter", "Miércoles Addams", "Jack Sparrow", "Santa Claus",
+    "Shrek", "Sherlock Holmes", "Batman", "Barbie", "Spiderman", "Super Mario",
+    "El Genio de Aladín", "Pato Donald", "Indiana Jones", "Homer Simpson",
+]
 
-assert not ns["revelacion_activa"](); q("INSERT OR REPLACE INTO ajustes VALUES ('revelacion', '1')"); assert ns["revelacion_activa"]()
-q("INSERT OR REPLACE INTO ajustes VALUES ('revelacion', '0')"); assert not ns["revelacion_activa"]()
-ok("la revelación final está oculta hasta que el organizador la activa")
-
-# ------------------------------------------------------------ 4. LAS 5 VOTACIONES
-print("\n4) VOTACIONES (los jugadores van acertando más cada semana)")
-prob = [0.15, 0.35, 0.60, 0.85]
-esperados = {n: [0] * 4 for n in char}
+try:
+    ADMIN_PIN = st.secrets["ADMIN_PIN"]
+except Exception:
+    ADMIN_PIN = os.environ.get("ADMIN_PIN", "admin1234")
 
 
-def votar(v, r):
-    otros = [n for n in char if n != v]
-    pool = [char[o] for o in otros]
-    aciertan = {o for o in otros if random.random() < prob[r]}
-    elegido, usados, pts = {}, set(), 0
-    for o in otros:
-        if o in aciertan:
-            elegido[o] = char[o]; usados.add(char[o]); pts += 1
-    for o in otros:
-        if o not in aciertan:
-            libres = [c for c in pool if c != char[o] and c not in usados]
-            if libres:
-                c = random.choice(libres); elegido[o] = c; usados.add(c)
-    amigo = None
-    if v in part:
-        dador = [g for g in part if regalos[g] == v][0]
-        if random.random() < prob[r]:
-            amigo = char[dador]; pts += 2
+# ---------------------------------------------------------------- BASE DE DATOS (SQLite compartida)
+def q(sql, args=(), fetch=False):
+    """Ejecuta una consulta. SQLite gestiona la concurrencia, así nadie pisa los datos de otro."""
+    with closing(sqlite3.connect(DB_FILE, timeout=15)) as con:
+        con.row_factory = sqlite3.Row
+        cur = con.execute(sql, args)
+        rows = cur.fetchall() if fetch else None
+        con.commit()
+        return rows
+
+
+def init_db():
+    q("""CREATE TABLE IF NOT EXISTS jugadores (
+        nombre TEXT PRIMARY KEY, rol TEXT, salt TEXT, pin_hash TEXT,
+        personaje TEXT, regala_a TEXT)""")
+    q("""CREATE TABLE IF NOT EXISTS pistas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, semana INTEGER, personaje TEXT,
+        texto TEXT, url TEXT, imagen TEXT)""")
+    q("""CREATE TABLE IF NOT EXISTS votos (
+        ronda INTEGER, votante TEXT, tipo TEXT, objetivo TEXT, personaje TEXT,
+        PRIMARY KEY (ronda, votante, tipo, objetivo))""")
+    try:  # bases de datos antiguas: añade el tipo de publicación (pista o mensaje libre)
+        q("ALTER TABLE pistas ADD COLUMN tipo TEXT DEFAULT 'pista'")
+    except sqlite3.OperationalError:
+        pass
+    q("""CREATE TABLE IF NOT EXISTS comentarios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, pista_id INTEGER, personaje TEXT, texto TEXT)""")
+    q("CREATE TABLE IF NOT EXISTS avatares (personaje TEXT PRIMARY KEY, ruta TEXT)")
+    q("CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT)")
+
+
+init_db()
+
+
+# ---------------------------------------------------------------- UTILIDADES
+def hash_pin(pin, salt):
+    return hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt), 100_000).hex()
+
+
+def nuevo_pin():
+    return f"{secrets.randbelow(10000):04d}"
+
+
+def poner_pin(nombre, pin):
+    salt = secrets.token_hex(8)
+    q("UPDATE jugadores SET salt=?, pin_hash=? WHERE nombre=?", (salt, hash_pin(pin, salt), nombre))
+
+
+def jugadores():
+    return q("SELECT * FROM jugadores ORDER BY nombre", fetch=True)
+
+
+def show_img(src):
+    try:
+        st.image(src, width="stretch")
+    except Exception:
+        st.image(src, use_container_width=True)
+
+
+def normalizar_url(url):
+    """Convierte enlaces de página de Giphy en el enlace directo del GIF."""
+    url = url.strip()
+    base = url.split("?")[0].rstrip("/")
+    if any(x in base for x in ("giphy.com/gifs/", "giphy.com/stickers/", "giphy.com/embed/")):
+        gid = base.split("/")[-1].split("-")[-1]
+        return f"https://media.giphy.com/media/{gid}/giphy.gif"
+    return url
+
+
+def mostrar_enlace(url):
+    """Pinta la imagen con una etiqueta <img> (más tolerante que st.image) y deja un enlace de respaldo."""
+    u = normalizar_url(url)
+    st.markdown(f'<img src="{html.escape(u, quote=True)}" style="width:100%;border-radius:8px" '
+                f'referrerpolicy="no-referrer" alt="pista">', unsafe_allow_html=True)
+    st.caption(f"[🔗 ¿No se ve? Abrir enlace]({u})")
+
+
+def todos_los_avatares():
+    return {r["personaje"]: r["ruta"] for r in q("SELECT * FROM avatares", fetch=True) if os.path.exists(r["ruta"])}
+
+
+def cabecera(avatar, texto):
+    """Foto de perfil del personaje (o una máscara si no tiene) junto al texto."""
+    c1, c2 = st.columns([1, 5])
+    with c1:
+        if avatar:
+            st.image(avatar, width=64)
         else:
-            amigo = random.choice([char[g] for g in part if g not in (v, dador)])
-    q("DELETE FROM votos WHERE ronda=? AND votante=?", (r, v))
-    for o, c in elegido.items():
-        q("INSERT INTO votos VALUES (?,?,?,?,?)", (r, v, "P", o, c))
-    if amigo:
-        q("INSERT INTO votos VALUES (?,?,?,?,?)", (r, v, "A", "", amigo))
+            st.markdown("<div style='font-size:44px;line-height:1.2'>🎭</div>", unsafe_allow_html=True)
+    with c2:
+        st.markdown(texto)
+
+
+def derangement(items, prohibidos=frozenset()):
+    """Sorteo sin que nadie se toque a sí mismo ni caiga en una pareja prohibida.
+    Devuelve None si no hay forma de cumplir todas las exclusiones."""
+    for _ in range(20000):
+        p = items[:]
+        random.shuffle(p)
+        if all(a != b and (a, b) not in prohibidos for a, b in zip(items, p)):
+            return dict(zip(items, p))
+    return None
+
+
+def revelacion_activa():
+    r = q("SELECT valor FROM ajustes WHERE clave='revelacion'", fetch=True)
+    return bool(r) and r[0]["valor"] == "1"
+
+
+def modo_prueba():
+    return st.session_state.get("admin") and st.session_state.get("prueba", False)
+
+
+def hoy():
+    return date.today()
+
+
+def ronda_abierta(i):
+    """Cada votación se puede enviar/cambiar desde su día hasta el día de la siguiente."""
+    inicio = RONDAS[i][1]
+    fin = RONDAS[i + 1][1] - timedelta(days=1) if i < len(RONDAS) - 1 else FIN_JUEGO
+    return inicio <= hoy() <= fin
+
+
+def semanas_empezadas():
+    return [i + 1 for i, r in enumerate(RONDAS) if r[0] <= hoy()]
+
+
+# ---------------------------------------------------------------- PUNTUACIÓN (calculada desde los votos)
+def calcular_puntos():
+    js = jugadores()
+    char_de = {j["nombre"]: j["personaje"] for j in js}
+    dueno = {j["personaje"]: j["nombre"] for j in js}
+    regala = {j["nombre"]: j["regala_a"] for j in js}
+    pts = {j["nombre"]: [0] * len(RONDAS) for j in js}
+    for v in q("SELECT * FROM votos", fetch=True):
+        if v["votante"] not in pts:
+            continue
+        if v["tipo"] == "P" and char_de.get(v["objetivo"]) == v["personaje"]:
+            pts[v["votante"]][v["ronda"]] += PUNTOS_PERSONAJE
+        elif v["tipo"] == "A":
+            d = dueno.get(v["personaje"])
+            if d and regala.get(d) == v["votante"]:
+                pts[v["votante"]][v["ronda"]] += PUNTOS_AMIGO
     return pts
 
 
-fechas = ["11 dic", "18 dic", "23 dic", "25 dic"]
-for r in range(4):
-    for v in char:
-        if r == 1:
-            votar(v, r)                 # primer envío (se cambia después: prueba de "reenviar voto")
-        esperados[v][r] = votar(v, r)
-    pts = ns["calcular_puntos"]()
-    tot = sorted(((sum(p), n) for n, p in pts.items()), reverse=True)
-    print(f"  Votación {r + 1} ({fechas[r]}): líder {tot[0][1]} ({tot[0][0]} pts) · último {tot[-1][1]} ({tot[-1][0]} pts)")
+# ---------------------------------------------------------------- SESIÓN / LOGIN
+st.sidebar.title("🎄 Menú")
 
-pts = ns["calcular_puntos"]()
-assert pts == esperados; ok("los puntos de la app coinciden con los esperados en las 4 votaciones")
-assert all(len(q("SELECT * FROM votos WHERE ronda=1 AND votante=? AND tipo='P'", (v,), fetch=True)) <= len(char) - 1 for v in char)
-ok("reenviar el voto sustituye al anterior (no se duplica)")
-assert all(pts[d][r] <= len(char) - 1 for d in det for r in range(4)); ok("un detective nunca pasa de 1 punto por personaje")
-maximo_part = 4 * (len(char) - 1 + 2)
-assert all(sum(pts[n]) <= maximo_part for n in part); ok(f"nadie supera el máximo teórico ({maximo_part} pts un participante)")
+if "usuario" not in st.session_state:
+    st.session_state.usuario = None
 
-# ------------------------------------------------------------ 5. RESULTADO FINAL
-print("\n5) CLASIFICACIÓN FINAL")
-print(f"  {'Jugador':<8} {'Rol':<13} {'V1':>3} {'V2':>3} {'V3':>3} {'V4':>3} {'Total':>6}")
-for n in sorted(pts, key=lambda x: -sum(pts[x])):
-    rol = "Participante" if n in part else "Detective"
-    print(f"  {n:<8} {rol:<13} " + " ".join(f"{p:>3}" for p in pts[n]) + f" {sum(pts[n]):>6}")
-print("\nSimulacro completado: toda la lógica del juego funciona de principio a fin.")
+if st.session_state.usuario is None:
+    nombres = [j["nombre"] for j in jugadores()]
+    with st.sidebar.form("login"):
+        n = st.selectbox("Tu nombre", ["—"] + nombres)
+        p = st.text_input("Tu PIN", type="password", max_chars=4)
+        if st.form_submit_button("Entrar"):
+            fila = q("SELECT * FROM jugadores WHERE nombre=?", (n,), fetch=True)
+            if fila and fila[0]["pin_hash"] and secrets.compare_digest(hash_pin(p, fila[0]["salt"]), fila[0]["pin_hash"]):
+                st.session_state.usuario = n
+                st.rerun()
+            else:
+                st.sidebar.error("Nombre o PIN incorrectos.")
+else:
+    st.sidebar.success(f"Hola, {st.session_state.usuario}")
+    if st.sidebar.button("Salir"):
+        st.session_state.usuario = None
+        st.rerun()
+
+with st.sidebar.expander("👑 Organizador"):
+    if not st.session_state.get("admin"):
+        ap = st.text_input("PIN de organizador", type="password", key="ap")
+        if st.button("Entrar como organizador"):
+            if ap == ADMIN_PIN:
+                st.session_state.admin = True
+                st.rerun()
+            else:
+                st.error("PIN incorrecto.")
+    else:
+        st.session_state.prueba = st.checkbox("Modo prueba (ignora las fechas)", value=st.session_state.get("prueba", False))
+        if st.button("Salir de organizador"):
+            st.session_state.admin = False
+            st.rerun()
+
+menu = ["🎁 Mi perfil", "🕵️‍♂️ Muro de pistas", "🗳️ Votaciones", "🏆 Ranking"]
+if st.session_state.get("admin"):
+    menu.append("⚙️ Organizador")
+pagina = st.sidebar.selectbox("Ir a:", menu)
+usuario = st.session_state.usuario
+
+st.title("🎅 El Banquete de los Impostores Navideños")
+
+
+def requiere_login(permitir_admin=False):
+    if usuario is None:
+        if permitir_admin and st.session_state.get("admin"):
+            return None
+        st.info("Entra con tu nombre y tu PIN en el menú de la izquierda.")
+        st.stop()
+    return q("SELECT * FROM jugadores WHERE nombre=?", (usuario,), fetch=True)[0]
+
+
+# ---------------------------------------------------------------- MI PERFIL
+if pagina == "🎁 Mi perfil":
+    yo = requiere_login()
+    st.header("🎄 Tu perfil secreto")
+    av = todos_los_avatares().get(yo["personaje"])
+    if av:
+        st.image(av, width=140)
+    st.info(f"🎭 Tu personaje es: **{yo['personaje']}**")
+    if yo["rol"] == "Participante":
+        st.info(f"🎁 Le haces el regalo a: **{yo['regala_a']}**")
+        st.caption("Alguien te lo hará a ti: ¡descubre quién es!")
+    else:
+        st.info("🕵️‍♂️ Juegas como **Detective Externo** (sin intercambio de regalos).")
+    st.caption("Solo tú ves esta pantalla. No se la enseñes a nadie.")
+
+# ---------------------------------------------------------------- MURO DE PISTAS
+elif pagina == "🕵️‍♂️ Muro de pistas":
+    yo = requiere_login(permitir_admin=True)
+    st.header("🕵️‍♂️ El Muro de los Impostores")
+    semanas = list(range(1, len(RONDAS) + 1)) if modo_prueba() else semanas_empezadas()
+    if yo is None:
+        st.info("Modo organizador: puedes moderar el muro. Para publicar, entra con tu nombre y tu PIN.")
+    else:
+        st.markdown(f"### 📤 Escribir en el muro como **{yo['personaje']}**")
+        tipo_msg = st.radio("¿Qué quieres publicar?", ["💬 Mensaje libre", "🎭 Pista de la semana"], horizontal=True)
+        es_pista = tipo_msg.startswith("🎭")
+        if es_pista and not semanas:
+            st.caption("Las pistas empiezan el viernes 4 de diciembre. Mientras tanto puedes escribir mensajes libres.")
+        with st.form("pista", clear_on_submit=True):
+            semana = st.selectbox("Semana de la pista", semanas, index=len(semanas) - 1) if (es_pista and semanas) else 0
+            texto = st.text_area("1. Escribe lo que quieras (habla como tu personaje):")
+            tipo = st.radio("2. Archivo visual (opcional)", ["Ninguno", "Enlace (GIF o imagen)", "Subir foto"])
+            url = st.text_input("Enlace del GIF o imagen (solo si eliges enlace). Mejor un enlace de Giphy o uno directo que acabe en .gif, .jpg o .png:")
+            foto = st.file_uploader("Foto (solo si eliges subir foto):", type=["png", "jpg", "jpeg", "gif"])
+            if st.form_submit_button("Publicar"):
+                ruta = ""
+                if tipo == "Subir foto" and foto is not None:
+                    ext = foto.name.rsplit(".", 1)[-1].lower()
+                    ruta = os.path.join(IMG_DIR, f"{uuid.uuid4().hex}.{ext}")
+                    with open(ruta, "wb") as f:
+                        f.write(foto.getvalue())
+                url_ok = url.strip() if tipo == "Enlace (GIF o imagen)" else ""
+                if es_pista and not semanas:
+                    st.error("Las pistas aún no han empezado. Elige «Mensaje libre».")
+                elif url_ok and not url_ok.lower().startswith(("http://", "https://")):
+                    st.error("El enlace debe empezar por http:// o https://")
+                elif texto.strip() or url_ok or ruta:
+                    q("INSERT INTO pistas (semana, personaje, texto, url, imagen, tipo) VALUES (?,?,?,?,?,?)",
+                      (semana, yo["personaje"], texto.strip(), url_ok, ruta, "pista" if es_pista else "mensaje"))
+                    st.success("¡Publicado en el muro!")
+                else:
+                    st.error("La publicación no puede estar vacía.")
+    st.markdown("---")
+    st.markdown("### 📜 Historial del muro")
+    avatares = todos_los_avatares()
+    for p in q("SELECT * FROM pistas ORDER BY id DESC", fetch=True):
+        if (p["tipo"] or "pista") == "mensaje":
+            sub = f"💬 **{p['personaje']}** dice:"
+        else:
+            sub = f"🎅 **{p['personaje']}** (Pista Semana {p['semana']})"
+        cabecera(avatares.get(p["personaje"]), sub)
+        if p["texto"]:
+            st.info(p["texto"])
+        if p["url"]:
+            mostrar_enlace(p["url"])
+        if p["imagen"] and os.path.exists(p["imagen"]):
+            show_img(p["imagen"])
+        coms = q("SELECT * FROM comentarios WHERE pista_id=? ORDER BY id", (p["id"],), fetch=True)
+        for c in coms:
+            ca, cb = st.columns([1, 9])
+            with ca:
+                if avatares.get(c["personaje"]):
+                    st.image(avatares[c["personaje"]], width=40)
+                else:
+                    st.markdown("<div style='font-size:28px'>🎭</div>", unsafe_allow_html=True)
+            with cb:
+                st.markdown(f"**{c['personaje']}:** {c['texto']}")
+            if st.session_state.get("admin"):
+                if st.button("🗑️ Quitar comentario", key=f"delc_{c['id']}"):
+                    q("DELETE FROM comentarios WHERE id=?", (c["id"],))
+                    st.rerun()
+        if yo is not None:
+            with st.form(f"com_{p['id']}", clear_on_submit=True):
+                t = st.text_input("💬 Comenta como tu personaje", key=f"t_{p['id']}", max_chars=300)
+                if st.form_submit_button("Comentar") and t.strip():
+                    q("INSERT INTO comentarios (pista_id, personaje, texto) VALUES (?,?,?)",
+                      (p["id"], yo["personaje"], t.strip()))
+                    st.rerun()
+        if st.session_state.get("admin"):
+            if st.button("🗑️ Eliminar esta publicación", key=f"del_{p['id']}"):
+                q("DELETE FROM pistas WHERE id=?", (p["id"],))
+                q("DELETE FROM comentarios WHERE pista_id=?", (p["id"],))
+                if p["imagen"] and os.path.exists(p["imagen"]):
+                    os.remove(p["imagen"])
+                st.rerun()
+
+# ---------------------------------------------------------------- VOTACIONES
+elif pagina == "🗳️ Votaciones":
+    yo = requiere_login()
+    st.header("🗳️ Urna de votación secreta")
+    abiertas = [i for i in range(len(RONDAS)) if modo_prueba() or ronda_abierta(i)]
+    if not abiertas:
+        proximas = [r[1] for r in RONDAS if r[1] > hoy()]
+        st.warning("No hay ninguna votación abierta." + (f" La próxima es el {proximas[0].strftime('%d/%m/%Y')}." if proximas else ""))
+        st.stop()
+    ronda = st.selectbox("Votación", abiertas, format_func=lambda i: f"Votación {i + 1} ({RONDAS[i][1].strftime('%d/%m')})", index=len(abiertas) - 1)
+
+    otros = [j for j in jugadores() if j["nombre"] != usuario]
+    opciones = sorted(j["personaje"] for j in otros)
+    previos = {(v["tipo"], v["objetivo"]): v["personaje"] for v in
+               q("SELECT * FROM votos WHERE ronda=? AND votante=?", (ronda, usuario), fetch=True)}
+    st.caption("Puedes cambiar tu voto y reenviarlo mientras la votación esté abierta. "
+               f"{PUNTOS_PERSONAJE} punto por personaje acertado y {PUNTOS_AMIGO} por acertar tu amigo invisible.")
+
+    # Sin formulario: cada cambio recarga la página para ir quitando de las listas los personajes ya asignados.
+    base = f"v_{ronda}_{usuario}_"
+    amigo = None
+    if yo["rol"] == "Participante":
+        st.markdown("### 🧠 Tu apuesta principal (doble punto)")
+        ops = ["—"] + [j["personaje"] for j in otros if j["rol"] == "Participante"]
+        ka = base + "amigo"
+        if ka not in st.session_state:
+            pr = previos.get(("A", ""), "—")
+            st.session_state[ka] = pr if pr in ops else "—"
+        amigo = st.selectbox("¿Qué personaje crees que es TU amigo invisible (el que te hace el regalo)?", ops, key=ka)
+
+    st.markdown("### 🕵️‍♂️ Quiniela de compañeros")
+    st.caption("Los personajes que ya has asignado a alguien desaparecen de la lista de los demás. "
+               "Para liberar uno, pon «—» en la persona a la que se lo habías asignado.")
+    claves = {j["nombre"]: f"{base}q_{j['nombre']}" for j in otros}
+    for j in otros:  # valores iniciales: tu voto anterior, si lo hay
+        k = claves[j["nombre"]]
+        if k not in st.session_state:
+            pr = previos.get(("P", j["nombre"]), "—")
+            st.session_state[k] = pr if pr in opciones else "—"
+    elegidos = {}
+    h1, h2 = st.columns([1, 2])
+    h1.markdown("**Participante**")
+    h2.markdown("**Personaje**")
+    for j in otros:
+        k = claves[j["nombre"]]
+        usados_otros = {st.session_state.get(claves[o["nombre"]]) for o in otros if o["nombre"] != j["nombre"]} - {"—", None}
+        ops = ["—"] + [c for c in opciones if c not in usados_otros]
+        if st.session_state.get(k) not in ops:
+            st.session_state[k] = "—"
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            st.markdown(f"<div style='padding-top:8px;font-size:1.05rem'>👤 <b>{html.escape(j['nombre'])}</b></div>", unsafe_allow_html=True)
+        with c2:
+            elegidos[j["nombre"]] = st.selectbox(f"Personaje de {j['nombre']}", ops, key=k, label_visibility="collapsed")
+
+    if st.button("Enviar voto", key=base + "enviar"):
+        usados = [v for v in elegidos.values() if v != "—"]
+        if len(usados) != len(set(usados)):
+            st.error("Has puesto el mismo personaje a dos personas. Cada personaje es de una sola persona.")
+        else:
+            q("DELETE FROM votos WHERE ronda=? AND votante=?", (ronda, usuario))
+            for nombre, pers in elegidos.items():
+                if pers != "—":
+                    q("INSERT INTO votos VALUES (?,?,?,?,?)", (ronda, usuario, "P", nombre, pers))
+            if amigo and amigo != "—":
+                q("INSERT INTO votos VALUES (?,?,?,?,?)", (ronda, usuario, "A", "", amigo))
+            st.success("¡Voto guardado! Los puntos se calculan al cerrar y aparecen en el ranking.")
+
+# ---------------------------------------------------------------- RANKING
+elif pagina == "🏆 Ranking":
+    st.header("🏆 Ranking global")
+    pts = calcular_puntos()
+    if not pts:
+        st.info("Aún no hay jugadores.")
+    else:
+        orden = sorted(pts, key=lambda n: -sum(pts[n]))
+        filas = []
+        for n in orden:
+            f = {"Jugador": n}
+            for i, v in enumerate(pts[n]):
+                f[f"V{i + 1}"] = v
+            f["Total"] = sum(pts[n])
+            filas.append(f)
+        st.dataframe(filas, hide_index=True, use_container_width=True)
+
+        medallas = ["🥇", "🥈", "🥉"]
+        txt = f"🎄 *Clasificación Amigo Invisible Doble* 🎅\n{hoy().strftime('%d/%m/%Y')}\n\n"
+        for k, n in enumerate(orden):
+            partes = ", ".join(f"V{i + 1}: {v}" for i, v in enumerate(pts[n]) if v)
+            txt += f"{medallas[k] if k < 3 else str(k + 1) + '.'} *{n}* – {sum(pts[n])} pts" + (f" ({partes})" if partes else "") + "\n"
+        txt += f"\n{PUNTOS_PERSONAJE} punto por personaje y {PUNTOS_AMIGO} por tu amigo invisible. ¡Se acumulan! 🏆"
+        st.markdown("### 📲 Informe para WhatsApp")
+        st.code(txt, language=None)
+
+        if revelacion_activa():
+            st.markdown("### 🎭 Revelación final")
+            st.dataframe([{"Jugador": j["nombre"], "Personaje": j["personaje"], "Regala a": j["regala_a"]} for j in jugadores()],
+                         hide_index=True, use_container_width=True)
+
+# ---------------------------------------------------------------- ORGANIZADOR
+elif pagina == "⚙️ Organizador":
+    st.header("⚙️ Panel del organizador")
+    st.subheader("1. Crear jugadores y hacer el sorteo")
+    pool_guardado = q("SELECT valor FROM ajustes WHERE clave='personajes'", fetch=True)
+    pool_txt = pool_guardado[0]["valor"] if pool_guardado else "\n".join(PERSONAJES_POR_DEFECTO)
+    with st.form("sorteo"):
+        part_txt = st.text_area("Participantes del amigo invisible (uno por línea)")
+        det_txt = st.text_area("Detectives externos: solo juegan a los personajes (uno por línea)")
+        excl_txt = st.text_area(
+            "Exclusiones del amigo invisible (opcional, una por línea).\n"
+            "«Ana > Luis» = Ana no le hace el regalo a Luis. «Ana = Luis» = no se tocan entre ellos (parejas).",
+            placeholder="Ana > Luis\nMaría = Pedro")
+        pers_txt = st.text_area("Personajes (uno por línea, al menos tantos como jugadores)", value=pool_txt, height=200)
+        ok = st.checkbox("Entiendo que esto borra jugadores, pistas y votos anteriores")
+        if st.form_submit_button("🎲 Hacer sorteo"):
+            part = list(dict.fromkeys(x.strip() for x in part_txt.splitlines() if x.strip()))
+            det = [x.strip() for x in det_txt.splitlines() if x.strip() and x.strip() not in part]
+            pers = list(dict.fromkeys(x.strip() for x in pers_txt.splitlines() if x.strip()))
+            todos = part + det
+            prohibidos, err_excl = set(), []
+            for linea in excl_txt.splitlines():
+                if not linea.strip():
+                    continue
+                sep = "=" if "=" in linea else ">" if ">" in linea else None
+                if not sep:
+                    err_excl.append(f"Formato no válido: «{linea.strip()}»")
+                    continue
+                a, b = (x.strip() for x in linea.split(sep, 1))
+                if a not in part or b not in part:
+                    err_excl.append(f"«{linea.strip()}»: ambos nombres deben estar en la lista de participantes.")
+                    continue
+                prohibidos.add((a, b))
+                if sep == "=":
+                    prohibidos.add((b, a))
+            regalos = derangement(part, frozenset(prohibidos)) if len(part) >= 3 and not err_excl else None
+            if not ok:
+                st.error("Marca la casilla de confirmación.")
+            elif len(part) < 3:
+                st.error("Hacen falta al menos 3 participantes.")
+            elif err_excl:
+                st.error("\n\n".join(err_excl))
+            elif regalos is None:
+                st.error("Con esas exclusiones no es posible hacer el sorteo. Quita alguna e inténtalo de nuevo.")
+            elif len(pers) < len(todos):
+                st.error(f"Hay {len(todos)} jugadores y solo {len(pers)} personajes.")
+            else:
+                q("DELETE FROM jugadores"); q("DELETE FROM pistas"); q("DELETE FROM votos"); q("DELETE FROM comentarios")
+                q("INSERT OR REPLACE INTO ajustes VALUES ('personajes', ?)", ("\n".join(pers),))
+                q("INSERT OR REPLACE INTO ajustes VALUES ('revelacion', '0')")
+                random.shuffle(pers)
+                pines = {}
+                for n in todos:
+                    pin = nuevo_pin()
+                    pines[n] = pin
+                    q("INSERT INTO jugadores (nombre, rol, personaje, regala_a) VALUES (?,?,?,?)",
+                      (n, "Participante" if n in part else "Detective", pers.pop(), regalos.get(n, "Ninguno")))
+                    poner_pin(n, pin)
+                st.session_state.pines = pines
+                st.success("¡Sorteo hecho! Envía a cada persona su PIN por WhatsApp.")
+
+    if st.session_state.get("pines"):
+        st.subheader("2. PIN de cada jugador (envíaselo en privado)")
+        for n, pin in st.session_state.pines.items():
+            st.code(f"🎄 Amigo Invisible Doble\nEntra con tu nombre ({n}) y este PIN: {pin}\nTu personaje y tu amigo invisible los verás dentro. ¡Secreto!", language=None)
+
+    st.subheader("3. Regenerar el PIN de alguien")
+    js = [j["nombre"] for j in jugadores()]
+    if js:
+        quien = st.selectbox("Jugador", js)
+        if st.button("Generar PIN nuevo"):
+            pin = nuevo_pin()
+            poner_pin(quien, pin)
+            st.success(f"Nuevo PIN de {quien}: **{pin}**")
+
+    st.subheader("4. Asignaciones (solo para el organizador)")
+    if st.checkbox("Mostrar asignaciones (¡spoilers!)"):
+        st.dataframe([{"Jugador": j["nombre"], "Rol": j["rol"], "Personaje": j["personaje"], "Regala a": j["regala_a"]}
+                      for j in jugadores()], hide_index=True, use_container_width=True)
+
+    st.subheader("5. Fotos de perfil de los personajes")
+    lista = [x.strip() for x in pool_txt.splitlines() if x.strip()]
+    avs = todos_los_avatares()
+    with st.form("avatar", clear_on_submit=True):
+        pers_sel = st.selectbox("Personaje", lista)
+        foto_av = st.file_uploader("Foto de perfil (png, jpg, gif o webp)", type=["png", "jpg", "jpeg", "gif", "webp"])
+        c_a, c_b = st.columns(2)
+        guardar = c_a.form_submit_button("Guardar foto")
+        quitar = c_b.form_submit_button("Quitar foto")
+        if guardar:
+            if foto_av is None:
+                st.error("Elige primero una imagen.")
+            else:
+                ext = foto_av.name.rsplit(".", 1)[-1].lower()
+                ruta = os.path.join(AVATAR_DIR, f"{uuid.uuid4().hex}.{ext}")
+                with open(ruta, "wb") as f:
+                    f.write(foto_av.getvalue())
+                vieja = avs.get(pers_sel)
+                q("INSERT OR REPLACE INTO avatares VALUES (?,?)", (pers_sel, ruta))
+                if vieja and os.path.exists(vieja):
+                    os.remove(vieja)
+                st.success(f"Foto de «{pers_sel}» guardada.")
+                st.rerun()
+        if quitar:
+            vieja = avs.get(pers_sel)
+            q("DELETE FROM avatares WHERE personaje=?", (pers_sel,))
+            if vieja and os.path.exists(vieja):
+                os.remove(vieja)
+            st.rerun()
+    if avs:
+        cols = st.columns(4)
+        for k, (n, r) in enumerate(avs.items()):
+            with cols[k % 4]:
+                st.image(r, width=70, caption=n)
+
+    st.subheader("6. Revelación final")
+    st.caption("Mientras esté desactivada, nadie ve los personajes ni los amigos invisibles en el ranking. Actívala el 25 de diciembre.")
+    activa = revelacion_activa()
+    nueva = st.checkbox("🎭 Mostrar la revelación final a todos los jugadores", value=activa, key="chk_revelacion")
+    if nueva != activa:
+        q("INSERT OR REPLACE INTO ajustes VALUES ('revelacion', ?)", ("1" if nueva else "0",))
+        st.rerun()
