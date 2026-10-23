@@ -657,7 +657,7 @@ elif pagina == "🕵️‍♂️ Muro de pistas":
             mostrar_enlace(p["url"])
         if p["imagen"] and os.path.exists(p["imagen"]):
             show_img(p["imagen"])
-        EMOJIS = ["😂", "❤️", "👀", "👍", "👎"]
+        EMOJIS = ["😂", "❤️", "👍", "👎"]
         reac = q("SELECT emoji, jugador FROM reacciones WHERE pista_id=?", (p["id"],), fetch=True)
         for ce, em in zip(st.columns([1, 1, 1, 5]), EMOJIS):
             n_em = sum(1 for r in reac if r["emoji"] == em)
