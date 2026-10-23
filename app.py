@@ -92,17 +92,17 @@ MAX_FALLOS = 5               # intentos de PIN fallidos antes de bloquear
 BLOQUEO_SEGUNDOS = 300       # 5 minutos de bloqueo
 
 PISTAS_POR_DEFECTO = [
-    "Cuéntanos, como tu personaje, una comida o bebida que te guste de verdad.",
-    "Una serie, película o canción que te guste de verdad, dicha como lo haría tu personaje.",
-    "Algo que llevas siempre encima o una manía que tengas, sin decir cuál es tu personaje.",
-    "PISTAS DOBLES: 1) una frase o un GIF muy típico de tu personaje. 2) una anécdota real que la familia reconozca, contada como tu personaje y sin nombres.",
+    "Cuenta una manía, costumbre o rutina que TÚ hagas todos los días en tu vida real, camuflada con el estilo de tu personaje.",
+    "Describe qué te encanta hacer en tu tiempo libre real o cuál es tu mayor afición.",
+    "Define cómo es tu propio carácter real (si eres tímido, fiestero, despistado, muy ordenado, etc.).",
+    "PISTAS DOBLES: 1) Cuenta una anécdota real, divertida o "tierra trágame" que te haya pasado a TI en tu vida real. 2) Comparte lo último que has comprado (¡Atrévete a decir la verdad!).",
 ]
 PREMIO_POR_DEFECTO = "Un premio sorpresa para quien más puntos consiga. ¡El organizador lo anunciará!"
 
 PERSONAJES_POR_DEFECTO = [
     "El Grinch", "Darth Vader", "Harry Potter", "Miércoles Addams", "Jack Sparrow", "Santa Claus",
     "Shrek", "Sherlock Holmes", "Batman", "Barbie", "Spiderman", "Super Mario",
-    "El Genio de Aladín", "Pato Donald", "Indiana Jones", "Homer Simpson",
+    "Gollum", "Pato Donald", "Indiana Jones", "Homer Simpson",
 ]
 
 try:
@@ -657,7 +657,7 @@ elif pagina == "🕵️‍♂️ Muro de pistas":
             mostrar_enlace(p["url"])
         if p["imagen"] and os.path.exists(p["imagen"]):
             show_img(p["imagen"])
-        EMOJIS = ["😂", "❤️", "👀"]
+        EMOJIS = ["😂", "❤️", "👀", "👍", "👎"]
         reac = q("SELECT emoji, jugador FROM reacciones WHERE pista_id=?", (p["id"],), fetch=True)
         for ce, em in zip(st.columns([1, 1, 1, 5]), EMOJIS):
             n_em = sum(1 for r in reac if r["emoji"] == em)
